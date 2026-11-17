@@ -34,24 +34,54 @@ export type ContextBreakdown = {
   threshold?: number
 }
 
-/** The panel's options for one surface, kept in the plugin's own store. */
+/** How many rows of a list the panel shows; 0 hides the list. */
+export type ListCount = 0 | 3 | 5
+
+/**
+ * The panel's options for one surface, kept in the plugin's own store. A
+ * section's own switch comes first, the details under it after.
+ */
 export type PanelSettings = {
   band: boolean
   sound: boolean
   notify: boolean
   /** Seconds a turn runs before its end raises a notification. */
   notifyAfterS: number
-  git: boolean
+  /** The header's model and effort. */
+  modelLine: boolean
+  context: boolean
+  /** The context's largest slices, named under its bar. */
+  legend: boolean
+  compactForecast: boolean
+  cache: boolean
   cacheTimer: boolean
   cacheTtl: 'auto' | '5m' | '1h'
+  /** The cache row's tokens read and written. */
+  cacheDetail: boolean
+  tokens: boolean
+  cost: boolean
   spend: boolean
-  compactForecast: boolean
+  /** The last seven days' spend as bars. */
+  spendBars: boolean
+  limits: boolean
+  activity: boolean
+  /** The tokens-per-second sparkline. */
+  sparkline: boolean
+  recentCalls: ListCount
+  git: boolean
+  changedFiles: ListCount
+  todo: boolean
   versions: boolean
   /** The terminal's icon set; other surfaces draw vector icons. */
   icons: 'nerd' | 'unicode'
+  /** The terminal's spinner wave, while a look is on. */
+  spinnerWave: boolean
 }
 
 export type PaneView = 'dash' | 'settings'
+
+/** The settings page's own pages. */
+export type SettingsPage = 'look' | 'panel' | 'alerts'
 
 export type ModelInfo = { model?: string; effort?: string }
 
@@ -123,6 +153,7 @@ declare module 'claude-code' {
       /** Per surface (`terminal`, `desktop`), mirrored from the store. */
       settings: Record<string, PanelSettings>
       paneView: PaneView
+      settingsPage: SettingsPage
       modelInfo: ModelInfo
       versions: Versions
       cacheClock: CacheClock

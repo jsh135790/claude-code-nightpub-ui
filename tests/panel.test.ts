@@ -41,7 +41,25 @@ const PUA = new RegExp(
 // block elements: sparkline bars and pixel art, none of which the band draws now
 const BLOCKS = /[▀-▟]/
 
+// Every section and every detail, as 0.4.1 drew them before any could be
+// turned off. The tests written for that run with these on both surfaces; a
+// test of what a new install shows passes `fresh`.
+const EVERYTHING = {
+  modelLine: true,
+  legend: true,
+  cache: true,
+  cacheDetail: true,
+  spendBars: true,
+  sparkline: true,
+  recentCalls: 5,
+  changedFiles: 5,
+  todo: true,
+  versions: true,
+} as const
+
 type EngineOptions = {
+  /** A new install: nothing stored, so the panel's own defaults. */
+  fresh?: boolean
   /** `git status --porcelain=v2 --branch` output; no repository when not given. */
   git?: string
   /** `git diff --numstat HEAD` output. */
@@ -108,7 +126,19 @@ const engine = (on: On, panes: UiPane[] = [], opts: EngineOptions = {}) => {
   on('session.version', () => ({ value: { version: '2.1.317', base: '2.1.317' } }))
   on('agent.list', () => ({ value: [] }))
   on('env.get', ($, e) => ({ value: env[e.name] }))
-  on('store.get', ($, e) => ({ value: store[e.key] }))
+  // what stands in the store where the test put nothing: EVERYTHING, unless fresh
+  const seeds: Record<string, unknown> =
+    opts.fresh === true ? {} : { 'settings.terminal': EVERYTHING, 'settings.desktop': EVERYTHING }
+  for (const key of Object.keys(seeds)) {
+    if (key in store) store[key] = { ...EVERYTHING, ...(store[key] as object) }
+  }
+  on('store.get', ($, e) => ({ value: e.key in store ? store[e.key] : seeds[e.key] }))
+  // a test that never starts the session reads the settings before any were loaded
+  on('state.get', { plugin: 'capsule-panel', key: 'settings' }, async ($, e, next) => {
+    const got = await next(e)
+    if (opts.fresh === true || got.value === undefined || got.value.version !== 0) return got
+    return { value: { value: { terminal: EVERYTHING, desktop: EVERYTHING }, version: 0 } }
+  })
   on('store.set', ($, e) => {
     store[e.key] = e.value
     return { value: undefined }
@@ -149,6 +179,11 @@ const engine = (on: On, panes: UiPane[] = [], opts: EngineOptions = {}) => {
   })
   on('ui.render', { component: 'AbovePrompt' }, () => ({ type: 'Box' }))
   return { closed, toasts, played, runs, notes, compacts, store, steps, session }
+}
+
+/** A call left running: the test ends with it under way, and what its teardown makes of it is nobody's to handle. */
+const running = (call: Promise<unknown>): void => {
+  call.catch(() => {})
 }
 
 /** Local noon (or the given hour and minute) on a day of November 2026. */
@@ -536,7 +571,7 @@ test('the band stays out of the way until a turn is working', async ($, on) => {
   await idle.unmount()
 
   await $.turn.start({ text: 'go', turnId: 't1' })
-  void $.tool.call({ tool: 'Bash', command: 'npm run build' })
+  running($.tool.call({ tool: 'Bash', command: 'npm run build' }))
   await clock.advance(240)
   const ui = await $.ui.mount({ ...WORKING_BAND, surface: 'terminal' })
   expect(await ui.find({ type: 'Text', text: /Bash/ })).toBeDefined()
@@ -583,7 +618,7 @@ test('the band capsule fits its label, and its spinner frame never changes', asy
   const thinkingWidth = Number((await capsule())?.props.width)
   expect(await spinner()).toBeUndefined()
 
-  void $.tool.call({ tool: 'Bash', command: 'npm run build' })
+  running($.tool.call({ tool: 'Bash', command: 'npm run build' }))
   await clock.advance(120)
   await terminal.redraw()
   await desktop.redraw()
@@ -608,7 +643,7 @@ test('the band capsule fits its label, and its spinner frame never changes', asy
 
   // a new tool changes the capsule's label and width beneath the frame, never
   // the frame: Claude Desktop keeps a frame only while it stays byte for byte the same
-  void $.tool.call({ tool: 'Glob', pattern: '**/*.ts' })
+  running($.tool.call({ tool: 'Glob', pattern: '**/*.ts' }))
   await clock.advance(120)
   await desktop.redraw()
   expect((await capsule())?.props.alt).toBe('Glob')
@@ -629,7 +664,7 @@ test('the band keeps to one line: only the detail gives way', async ($, on) => {
     return { result: {}, text: 'ok' }
   })
   await $.turn.start({ text: 'go', turnId: 't1' })
-  void $.tool.call({ tool: 'Bash', command: `npm run build -- ${'--flag '.repeat(20)}` })
+  running($.tool.call({ tool: 'Bash', command: `npm run build -- ${'--flag '.repeat(20)}` }))
   await clock.advance(240)
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ ...WORKING_BAND, props: { ...BAND_PROPS, isWorking: true, bodyColumns: 60 }, surface })
@@ -659,11 +694,18 @@ test('the settings page changes one surface, and the store keeps it', async ($, 
   await pane.redraw()
   // a whole page of its own: the dashboard steps aside
   expect(await pane.find({ type: 'Text', text: /CONTEXT/ })).toBeUndefined()
-  expect(await pane.find({ type: 'Text', text: /^Activity band$/ })).toBeDefined()
-  expect(await pane.find({ type: 'Text', text: /the terminal only/ })).toBeDefined()
-  expect((await pane.find({ key: 'set-band' }))?.props.label).toBe('on')
-  expect((await pane.find({ key: 'set-cacheTtl' }))?.props.label).toBe('auto (1h)')
+  // it opens on Look, where the terminal's own icon set is; the rest is a page away
   expect(await pane.find({ key: 'set-icons' })).toBeDefined()
+  expect(await pane.find({ type: 'Text', text: /the terminal only/ })).toBeDefined()
+  expect(await pane.find({ key: 'set-band' })).toBeUndefined()
+  await pane.press({ key: 'tab-panel' })
+  await pane.redraw()
+  expect((await pane.find({ key: 'set-cacheTtl' }))?.props.label).toBe('auto (1h)')
+  expect(await pane.find({ key: 'set-icons' })).toBeUndefined()
+  await pane.press({ key: 'tab-alerts' })
+  await pane.redraw()
+  expect(await pane.find({ type: 'Text', text: /^Activity band$/ })).toBeDefined()
+  expect((await pane.find({ key: 'set-band' }))?.props.label).toBe('on')
 
   await pane.press({ key: 'set-band' })
   await pane.press({ key: 'set-notifyAfterS' })
@@ -689,6 +731,7 @@ test('the settings page changes one surface, and the store keeps it', async ($, 
   expect((await desktop.find({ type: 'Svg' }))?.props.alt).toBe('thinking')
   const settings = await $.ui.mount({ ...PANE, surface: 'desktop' })
   await settings.press({ key: 'open-settings' })
+  await settings.press({ key: 'tab-look' })
   await settings.redraw()
   expect(await settings.find({ key: 'set-icons' })).toBeUndefined()
   expect(await settings.find({ type: 'Text', text: /Claude Desktop only/ })).toBeDefined()
@@ -709,6 +752,7 @@ test('Claude Desktop starts with the sound and the notification off', async ($, 
 
   const pane = await $.ui.mount({ ...PANE, surface: 'desktop' })
   await pane.press({ key: 'open-settings' })
+  await pane.press({ key: 'tab-alerts' })
   await pane.redraw()
   expect((await pane.find({ key: 'set-sound' }))?.props.label).toBe('off')
   expect((await pane.find({ key: 'set-notify' }))?.props.label).toBe('off')
@@ -800,6 +844,8 @@ test('the header names the model and effort, the footer the versions', async ($,
   expect(await ui.find({ type: 'Text', text: /^CC 2\.1\.317 · Desktop 4\.23118\.0$/ })).toBeDefined()
 
   await ui.press({ key: 'open-settings' })
+  await ui.press({ key: 'tab-panel' })
+  await ui.redraw()
   await ui.press({ key: 'set-versions' })
   await ui.press({ key: 'settings-back' })
   await clock.settle()
@@ -845,6 +891,7 @@ test('a key in the environment makes the cache 5 minutes, and the TTL setting ov
   expect(await ui.find({ type: 'Text', text: /^ {2}warm 5m$/ })).toBeDefined()
 
   await ui.press({ key: 'open-settings' })
+  await ui.press({ key: 'tab-panel' })
   await ui.redraw()
   expect((await ui.find({ key: 'set-cacheTtl' }))?.props.label).toBe('auto (5m)')
   await ui.press({ key: 'set-cacheTtl' })
@@ -1017,6 +1064,8 @@ test('outside a repository the edits still count, and the git setting hides them
   expect(await ui.find({ type: 'Text', text: /^ {2}notes\.md$/ })).toBeDefined()
 
   await ui.press({ key: 'open-settings' })
+  await ui.press({ key: 'tab-panel' })
+  await ui.redraw()
   await ui.press({ key: 'set-git' })
   await ui.press({ key: 'settings-back' })
   await clock.settle()
@@ -1063,5 +1112,146 @@ test('a figure at 80% or more breathes red while Claude works, and holds still a
   await clock.advance(1_000)
   await ui.redraw()
   expect(await color()).toBe(RED)
+  await ui.unmount()
+})
+
+// ── what a new install shows, and the switches ────────────────────────────
+
+/** The changed files the pane lists, top to bottom. */
+const fileRows = async (ui: { findAll: (query: { type: string; text: RegExp }) => Promise<{ text: string }[]> }) =>
+  (await ui.findAll({ type: 'Text', text: /^ {2}\S+\.ts$/ })).map(t => t.text.trim())
+
+test('a new install shows the short panel: the sections most sessions want, their details folded', async ($, on) => {
+  engine(on, [], { fresh: true, env: { CLAUDE_EFFORT: 'xhigh' }, git: '# branch.oid abc\n# branch.head main\n' })
+  const clock = mock.clock(on, { now: 1_000_000 })
+  on('tool.call', () => ({ result: {}, text: 'ok' }))
+  await $.session.start({ cwd: 'C:/work', surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  const resetsAt = new Date(1_000_000 + 60 * MINUTE).toISOString()
+  await $.session.measure(measure(42, { costUsd: 1.5, limits: [{ pct: 30, resetsAt }] }))
+  for (const name of ['a', 'b', 'c', 'd', 'e']) {
+    await $.tool.call({ tool: 'Edit', file_path: `C:/work/src/${name}.ts`, old_string: 'x', new_string: 'y' })
+  }
+  await $.tool.call({ tool: 'TodoWrite', todos: [{ content: 'Ship it', status: 'in_progress', activeForm: 'Shipping it' }] })
+  await clock.advance(2_000)
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  for (const shown of [/CONTEXT/, /TOKENS/, /COST/, /SPEND/, /LIMITS/, /ACTIVITY/, /^ main$/]) {
+    expect(await ui.find({ type: 'Text', text: shown })).toBeDefined()
+  }
+  // a switch away, each of them
+  for (const folded of [/CACHE/, /TODO/, /Shipping it/, /^CC /, /test-1/, /xhigh/]) {
+    expect(await ui.find({ type: 'Text', text: folded })).toBeUndefined()
+  }
+  // the lists show three: the newest files, the last calls
+  expect(await fileRows(ui)).toEqual(['e.ts', 'd.ts', 'c.ts'])
+  expect(await ui.find({ type: 'Text', text: /^ {2}\+2 more$/ })).toBeDefined()
+  expect((await ui.findAll({ type: 'Text', text: /^✓ $/ })).length).toBe(3)
+  // the week's spend is a figure, with no bars after it
+  expect((await ui.findAll({ type: 'Text' })).some(t => BLOCKS.test(t.text))).toBe(false)
+  await ui.unmount()
+})
+
+test("a section's switch takes the section away, and leaves no gap behind", async ($, on) => {
+  const { store } = engine(on, [], { fresh: true })
+  const clock = mock.clock(on, { now: 1_000_000 })
+  await $.session.start({ cwd: 'C:/work', surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'open-settings' })
+  await ui.press({ key: 'tab-panel' })
+  await ui.redraw()
+  for (const id of ['context', 'tokens', 'cost', 'activity']) await ui.press({ key: `set-${id}` })
+  await ui.press({ key: 'settings-back' })
+  await clock.settle()
+  await ui.redraw()
+  for (const gone of [/CONTEXT/, /TOKENS/, /COST/, /ACTIVITY/, /no activity yet/, /compact now/]) {
+    expect(await ui.find({ type: 'Text', text: gone })).toBeUndefined()
+  }
+  expect(await ui.find({ key: 'compact' })).toBeUndefined()
+  // the header, one blank line, the footer
+  expect((await ui.findAll({ type: 'Text' })).filter(t => t.text === ' ').length).toBe(1)
+  expect(await ui.find({ key: 'open-settings' })).toBeDefined()
+  // the store keeps what was changed, and nothing else
+  expect(store['settings.terminal']).toEqual({ context: false, tokens: false, cost: false, activity: false })
+  await ui.unmount()
+})
+
+test('a detail comes back with its switch, and a list steps 3, off, 5', async ($, on) => {
+  engine(on, [], { fresh: true })
+  const clock = mock.clock(on, { now: 1_000_000 })
+  on('tool.call', () => ({ result: {}, text: 'ok' }))
+  await $.session.start({ cwd: 'C:/work', surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  for (const name of ['a', 'b', 'c', 'd', 'e']) {
+    await $.tool.call({ tool: 'Edit', file_path: `C:/work/src/${name}.ts`, old_string: 'x', new_string: 'y' })
+  }
+  await clock.advance(2_000)
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(await fileRows(ui)).toEqual(['e.ts', 'd.ts', 'c.ts'])
+
+  await ui.press({ key: 'open-settings' })
+  await ui.press({ key: 'tab-panel' })
+  await ui.redraw()
+  // a detail of a section that is off is dim: it shows nothing until the section does
+  expect((await ui.find({ key: 'set-cacheDetail' }))?.props.dimColor).toBe(true)
+  await ui.press({ key: 'set-cache' })
+  await ui.press({ key: 'set-cacheDetail' })
+  expect((await ui.find({ key: 'set-changedFiles' }))?.props.label).toBe('3')
+  await ui.press({ key: 'set-changedFiles' })
+  await ui.redraw()
+  expect((await ui.find({ key: 'set-changedFiles' }))?.props.label).toBe('off')
+  expect((await ui.find({ key: 'set-cacheDetail' }))?.props.dimColor).toBe(false)
+  await ui.press({ key: 'settings-back' })
+  await clock.settle()
+  await ui.redraw()
+  expect(await ui.find({ type: 'Text', text: /CACHE/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^ {2}R 0 {2}W 0$/ })).toBeDefined()
+  // the list is gone, and the count of what was edited stays
+  expect(await fileRows(ui)).toEqual([])
+  expect(await ui.find({ type: 'Text', text: /^ 5 files edited$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /more$/ })).toBeUndefined()
+
+  await ui.press({ key: 'open-settings' })
+  await ui.press({ key: 'set-changedFiles' })
+  await ui.press({ key: 'settings-back' })
+  await clock.settle()
+  await ui.redraw()
+  expect(await fileRows(ui)).toEqual(['e.ts', 'd.ts', 'c.ts', 'b.ts', 'a.ts'])
+  await ui.unmount()
+})
+
+test('what 0.4.1 stored reads back over the new defaults', async ($, on) => {
+  const stored = {
+    band: false,
+    sound: true,
+    notify: true,
+    notifyAfterS: 120,
+    git: true,
+    cacheTimer: true,
+    cacheTtl: '5m',
+    spend: true,
+    compactForecast: true,
+    versions: true,
+    icons: 'unicode',
+  }
+  engine(on, [], { fresh: true, store: { 'settings.terminal': stored } })
+  const clock = mock.clock(on, { now: 1_000_000 })
+  await $.session.start({ cwd: 'C:/work', surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  // what was stored stands: the versions it kept on, the icons it chose
+  expect(await ui.find({ type: 'Text', text: /^CC 2\.1\.317$/ })).toBeDefined()
+  expect((await ui.findAll({ type: 'Text' })).some(t => PUA.test(t.text))).toBe(false)
+  // what it never knew takes the new default
+  expect(await ui.find({ type: 'Text', text: /CACHE/ })).toBeUndefined()
+  await ui.press({ key: 'open-settings' })
+  await ui.press({ key: 'tab-alerts' })
+  await ui.redraw()
+  expect((await ui.find({ key: 'set-band' }))?.props.label).toBe('off')
+  expect((await ui.find({ key: 'set-notifyAfterS' }))?.props.label).toBe('120s')
+  await ui.press({ key: 'tab-panel' })
+  await ui.redraw()
+  expect((await ui.find({ key: 'set-cacheTtl' }))?.props.label).toBe('5m')
+  expect((await ui.find({ key: 'set-recentCalls' }))?.props.label).toBe('3')
   await ui.unmount()
 })

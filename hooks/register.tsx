@@ -25,6 +25,7 @@ import type {
   RateSample,
   SessionTotals,
   PanelSettings,
+  SettingsPage,
   SpendState,
   SpendTotals,
   TodoItem,
@@ -41,7 +42,8 @@ const TWEEN_MS = 600
 const HEARTBEAT_MS = 30_000
 const GIT_DEBOUNCE_MS = 1_500
 const MAX_ACTIVITY = 6
-const SHOWN_ACTIVITY = 5
+// how many rows a list may show: the settings step through these, 0 is off
+const LIST_COUNTS = [5, 3, 0] as const
 const MAX_RATES = 24
 const MAX_SAMPLES = 60
 const SAMPLE_EVERY_MS = 5 * 60_000
@@ -65,7 +67,6 @@ const CTX_HISTORY = 6
 const COMPACT_ARM_MS = 3_000
 const COMPACT_SHOWN_MS = 15 * 60_000
 const MAX_FILES = 50
-const SHOWN_FILES = 5
 const FLASH_MS = 1_000
 const HOT_PCT = 80
 // tools that can change the work tree, tools that write a file, and tools that
@@ -119,18 +120,35 @@ type SurfaceKey = 'terminal' | 'desktop'
 
 const surfaceKey = (surface: string): SurfaceKey => (surface === 'terminal' ? 'terminal' : 'desktop')
 
+// A new install shows the short panel: the sections most sessions want, each
+// with its details folded away. The rest is a switch away on the settings page.
 const TERMINAL_DEFAULTS: PanelSettings = {
   band: true,
   sound: true,
   notify: true,
   notifyAfterS: 60,
-  git: true,
+  modelLine: false,
+  context: true,
+  legend: false,
+  compactForecast: true,
+  cache: false,
   cacheTimer: true,
   cacheTtl: 'auto',
+  cacheDetail: false,
+  tokens: true,
+  cost: true,
   spend: true,
-  compactForecast: true,
-  versions: true,
+  spendBars: false,
+  limits: true,
+  activity: true,
+  sparkline: false,
+  recentCalls: 3,
+  git: true,
+  changedFiles: 3,
+  todo: false,
+  versions: false,
   icons: 'nerd',
+  spinnerWave: true,
 }
 
 // Claude Desktop notifies and chimes on its own
@@ -138,30 +156,35 @@ const DESKTOP_DEFAULTS: PanelSettings = { ...TERMINAL_DEFAULTS, sound: false, no
 
 const defaultsFor = (key: SurfaceKey): PanelSettings => (key === 'terminal' ? TERMINAL_DEFAULTS : DESKTOP_DEFAULTS)
 
-/** A stored value read over the defaults, field by field, so an old or partial one is safe. */
+/**
+ * A stored value read over the defaults, field by field, so an old or partial
+ * one is safe: a switch is taken when it is a boolean, a choice when it is one
+ * of its values, and anything else is the default.
+ */
 const normalizeSettings = (raw: unknown, key: SurfaceKey): PanelSettings => {
   const base = defaultsFor(key)
   if (typeof raw !== 'object' || raw === null) return base
   const r = raw as Record<string, unknown>
-  const bool = (k: keyof PanelSettings): boolean => (typeof r[k] === 'boolean' ? (r[k] as boolean) : (base[k] as boolean))
+  const switches: Record<string, unknown> = {}
+  for (const [name, value] of Object.entries(base)) {
+    if (typeof value === 'boolean' && typeof r[name] === 'boolean') switches[name] = r[name]
+  }
   return {
-    band: bool('band'),
-    sound: bool('sound'),
-    notify: bool('notify'),
-    notifyAfterS: NOTIFY_STEPS.find(s => s === r.notifyAfterS) ?? base.notifyAfterS,
-    git: bool('git'),
-    cacheTimer: bool('cacheTimer'),
+    ...base,
+    ...switches,
+    notifyAfterS: NOTIFY_STEPS.find(step => step === r.notifyAfterS) ?? base.notifyAfterS,
     cacheTtl: r.cacheTtl === '5m' || r.cacheTtl === '1h' || r.cacheTtl === 'auto' ? r.cacheTtl : base.cacheTtl,
-    spend: bool('spend'),
-    compactForecast: bool('compactForecast'),
-    versions: bool('versions'),
+    recentCalls: LIST_COUNTS.find(n => n === r.recentCalls) ?? base.recentCalls,
+    changedFiles: LIST_COUNTS.find(n => n === r.changedFiles) ?? base.changedFiles,
     icons: r.icons === 'unicode' || r.icons === 'nerd' ? r.icons : base.icons,
   }
 }
 
-const settingsFor = (all: Readonly<Record<string, PanelSettings>>, surface: string): PanelSettings => {
+// Read over the defaults each time: what the session's state holds may have
+// been written by a version with fewer settings, before a reload.
+const settingsFor = (all: Readonly<Record<string, unknown>>, surface: string): PanelSettings => {
   const key = surfaceKey(surface)
-  return all[key] ?? defaultsFor(key)
+  return normalizeSettings(all[key], key)
 }
 
 type IconChoice = 'auto' | 'nerd' | 'unicode'
@@ -298,6 +321,7 @@ const snapshotAtom = atom({ plugin: 'capsule-panel', key: 'snapshot' } as const,
 const totalsAtom = atom({ plugin: 'capsule-panel', key: 'totals' } as const, EMPTY_TOTALS)
 const settingsAtom = atom({ plugin: 'capsule-panel', key: 'settings' } as const, {})
 const paneViewAtom = atom({ plugin: 'capsule-panel', key: 'paneView' } as const, 'dash')
+const settingsPageAtom = atom({ plugin: 'capsule-panel', key: 'settingsPage' } as const, 'look')
 const modelInfoAtom = atom({ plugin: 'capsule-panel', key: 'modelInfo' } as const, {})
 const versionsAtom = atom({ plugin: 'capsule-panel', key: 'versions' } as const, {})
 const cacheAtom = atom({ plugin: 'capsule-panel', key: 'cacheClock' } as const, FRESH_CACHE)
@@ -760,9 +784,13 @@ const loadSettings = async ($: EngineInterface): Promise<void> => {
 /** Changes one surface's settings, in the session and in the store. */
 const changeSettings = async ($: EngineInterface, surface: string, patch: Partial<PanelSettings>): Promise<void> => {
   const key = surfaceKey(surface)
-  const all = await update($, settingsAtom, prev => ({ ...prev, [key]: { ...settingsFor(prev, key), ...patch } }))
+  await update($, settingsAtom, prev => ({ ...prev, [key]: { ...settingsFor(prev, key), ...patch } }))
   try {
-    await $.store.set(settingsKey(key), all[key])
+    // Only what was changed is kept, so a default that moves in a later
+    // version reaches everyone who never touched that setting.
+    const stored: unknown = await $.store.get(settingsKey(key))
+    const kept = typeof stored === 'object' && stored !== null ? stored : {}
+    await $.store.set(settingsKey(key), { ...kept, ...patch })
   } catch {
     // kept for this session
   }
@@ -820,7 +848,10 @@ const scheduleCacheTick = async ($: EngineInterface): Promise<void> => {
   cacheTimers = []
   const cache = await read($, cacheAtom)
   if (cache.warmAt === undefined) return
-  const expiresAt = cache.warmAt + ttlFor(await primarySettings($), cache)
+  const settings = await primarySettings($)
+  // no countdown on screen, nothing to count down
+  if (!settings.cache || !settings.cacheTimer) return
+  const expiresAt = cache.warmAt + ttlFor(settings, cache)
   const now = await $.clock.now()
   if (now > expiresAt) return
   cacheTimers.push(
@@ -1372,6 +1403,10 @@ const metricRow = (ui: Ui, look: Look, name: IconName, label: string, accent: st
 
 const gap = (ui: Ui) => <ui.Text> </ui.Text>
 
+/** A section's rows: what its conditions left of them. */
+const rowsOf = (...rows: (RenderNode | false | undefined)[]): RenderNode[] =>
+  rows.filter((row): row is RenderNode => row !== false && row !== undefined)
+
 const barCells = (c: PanelColors, width: number, pct: number | undefined, color: string): Cell[] => {
   const filled = Math.round((width * clampPct(pct)) / 100)
   return [
@@ -1536,81 +1571,151 @@ const pressCompact = async ($: EngineInterface): Promise<void> => {
 
 type SettingRow = { id: string; label: string; value: string; isOn: boolean; patch: Partial<PanelSettings> }
 
+/** The settings that are a plain switch. */
+type Flag = { [K in keyof PanelSettings]-?: PanelSettings[K] extends boolean ? K : never }[keyof PanelSettings]
+
 const nextOf = <T,>(list: readonly T[], value: T): T => list[(list.indexOf(value) + 1) % list.length] ?? value
 
-const settingRows = (surface: string, s: PanelSettings, cache: CacheClock): SettingRow[] => {
-  const flag = (id: 'band' | 'sound' | 'notify' | 'git' | 'cacheTimer' | 'spend' | 'compactForecast' | 'versions', label: string) => ({
-    id,
-    label,
-    value: s[id] ? 'on' : 'off',
-    isOn: s[id],
-    patch: { [id]: !s[id] },
-  })
-  const rows: SettingRow[] = [
-    flag('band', 'Activity band'),
-    flag('sound', 'Completion sound'),
-    flag('notify', 'Long-turn notification'),
-    {
-      id: 'notifyAfterS',
-      label: '  after',
-      value: `${s.notifyAfterS}s`,
-      isOn: s.notify,
-      patch: { notifyAfterS: nextOf<number>(NOTIFY_STEPS, s.notifyAfterS) },
-    },
-    flag('git', 'Git & changed files'),
-    flag('cacheTimer', 'Cache countdown'),
-    {
-      id: 'cacheTtl',
-      label: '  TTL',
-      value: s.cacheTtl === 'auto' ? `auto (${cache.autoTtlMs === TTL_1H ? '1h' : '5m'})` : s.cacheTtl,
-      isOn: s.cacheTimer,
-      patch: { cacheTtl: nextOf(['auto', '5m', '1h'] as const, s.cacheTtl) },
-    },
-    flag('spend', 'Today / week spend'),
-    flag('compactForecast', 'Compact forecast'),
-    flag('versions', 'Versions'),
-  ]
-  if (surface === 'terminal') {
-    rows.push({
-      id: 'icons',
-      label: 'Icons',
-      value: s.icons,
-      isOn: true,
-      patch: { icons: s.icons === 'nerd' ? 'unicode' : 'nerd' },
-    })
-  }
-  return rows
-}
+/** A switch's row. A detail's row is dim while the section it belongs to (`isParentOn`) is off. */
+const flagRow = (s: PanelSettings, id: Flag, label: string, isParentOn = true): SettingRow => ({
+  id,
+  label,
+  value: s[id] ? 'on' : 'off',
+  isOn: isParentOn && s[id],
+  patch: { [id]: !s[id] },
+})
+
+/** A list's row: how many of its rows show, stepping 5, 3, off. */
+const countRow = (s: PanelSettings, id: 'recentCalls' | 'changedFiles', label: string, isParentOn: boolean): SettingRow => ({
+  id,
+  label,
+  value: s[id] === 0 ? 'off' : `${s[id]}`,
+  isOn: isParentOn && s[id] !== 0,
+  patch: { [id]: nextOf<number>(LIST_COUNTS, s[id]) },
+})
+
+/** The Look page: what this surface alone draws with. */
+const lookRows = (surface: string, s: PanelSettings): SettingRow[] =>
+  surface !== 'terminal'
+    ? []
+    : [
+        {
+          id: 'icons',
+          label: 'Icons',
+          value: s.icons,
+          isOn: true,
+          patch: { icons: s.icons === 'nerd' ? 'unicode' : 'nerd' },
+        },
+        flagRow(s, 'spinnerWave', 'Spinner wave'),
+      ]
+
+/** The Panel page: every section's switch, the details of each under it. */
+const panelRows = (s: PanelSettings, cache: CacheClock): SettingRow[] => [
+  flagRow(s, 'modelLine', 'Model & effort'),
+  flagRow(s, 'context', 'Context'),
+  flagRow(s, 'legend', '  legend', s.context),
+  flagRow(s, 'compactForecast', '  compact forecast', s.context),
+  flagRow(s, 'cache', 'Cache'),
+  flagRow(s, 'cacheTimer', '  countdown', s.cache),
+  {
+    id: 'cacheTtl',
+    label: '  TTL',
+    value: s.cacheTtl === 'auto' ? `auto (${cache.autoTtlMs === TTL_1H ? '1h' : '5m'})` : s.cacheTtl,
+    isOn: s.cache && s.cacheTimer,
+    patch: { cacheTtl: nextOf(['auto', '5m', '1h'] as const, s.cacheTtl) },
+  },
+  flagRow(s, 'cacheDetail', '  read / write', s.cache),
+  flagRow(s, 'tokens', 'Tokens'),
+  flagRow(s, 'cost', 'Cost'),
+  flagRow(s, 'spend', 'Spend'),
+  flagRow(s, 'spendBars', '  7-day bars', s.spend),
+  flagRow(s, 'limits', 'Limits'),
+  flagRow(s, 'activity', 'Activity'),
+  flagRow(s, 'sparkline', '  tok/s sparkline', s.activity),
+  countRow(s, 'recentCalls', '  recent calls', s.activity),
+  flagRow(s, 'git', 'Git'),
+  countRow(s, 'changedFiles', '  changed files', s.git),
+  flagRow(s, 'todo', 'Todo'),
+  flagRow(s, 'versions', 'Versions'),
+]
+
+/** The Alerts page: what happens outside the pane. */
+const alertRows = (s: PanelSettings): SettingRow[] => [
+  flagRow(s, 'band', 'Activity band'),
+  flagRow(s, 'sound', 'Completion sound'),
+  flagRow(s, 'notify', 'Long-turn notification'),
+  {
+    id: 'notifyAfterS',
+    label: '  after',
+    value: `${s.notifyAfterS}s`,
+    isOn: s.notify,
+    patch: { notifyAfterS: nextOf<number>(NOTIFY_STEPS, s.notifyAfterS) },
+  },
+]
+
+const SETTINGS_PAGES: readonly { id: SettingsPage; label: string }[] = [
+  { id: 'look', label: 'Look' },
+  { id: 'panel', label: 'Panel' },
+  { id: 'alerts', label: 'Alerts' },
+]
 
 const surfaceName = (surface: string): string => (surface === 'terminal' ? 'the terminal' : 'Claude Desktop')
 
-/** The settings page that takes the pane's place while it is open: this surface's settings. */
-const settingsPage = ($: EngineInterface, ui: Ui, look: Look, surface: string, s: PanelSettings, cache: CacheClock) => {
+/**
+ * The settings page that takes the pane's place while it is open: three pages
+ * of this surface's settings, one shown at a time.
+ */
+const settingsPage = (
+  $: EngineInterface,
+  ui: Ui,
+  look: Look,
+  surface: string,
+  s: PanelSettings,
+  cache: CacheClock,
+  page: SettingsPage,
+) => {
   const C = look.c
+  const rows = page === 'look' ? lookRows(surface, s) : page === 'panel' ? panelRows(s, cache) : alertRows(s)
   return (
-  <ui.Box flexDirection="column" paddingX={1}>
-    <ui.Button key="settings-back" plain dimColor label="← back" onPress={() => update($, paneViewAtom, () => 'dash')} />
-    {gap(ui)}
-    {sectionHeader(ui, look, 'gear', 'SETTINGS', C.mauve)}
-    {settingRows(surface, s, cache).map(r => (
+    <ui.Box flexDirection="column" paddingX={1}>
       <ui.Box flexDirection="row" justifyContent="space-between" alignItems="center">
-        <ui.Text color={r.isOn ? C.text : C.overlay0} wrap="truncate-end">
-          {r.label}
-        </ui.Text>
-        <ui.Button
-          key={`set-${r.id}`}
-          plain
-          dimColor={!r.isOn}
-          label={r.value}
-          onPress={() => changeSettings($, surface, r.patch)}
-        />
+        <ui.Button key="settings-back" plain dimColor label="← back" onPress={() => update($, paneViewAtom, () => 'dash')} />
+        <ui.Box flexDirection="row" alignItems="center" flexShrink={0}>
+          {SETTINGS_PAGES.map(p => (
+            <ui.Box flexDirection="row" alignItems="center" flexShrink={0}>
+              {space(ui, 2)}
+              <ui.Button
+                key={`tab-${p.id}`}
+                plain
+                dimColor={p.id !== page}
+                label={p.label}
+                onPress={() => update($, settingsPageAtom, () => p.id)}
+              />
+            </ui.Box>
+          ))}
+        </ui.Box>
       </ui.Box>
-    ))}
-    {gap(ui)}
-    <ui.Text color={C.overlay0} size="footnote">
-      {`These apply to ${surfaceName(surface)} only.`}
-    </ui.Text>
-  </ui.Box>
+      {gap(ui)}
+      {sectionHeader(ui, look, 'gear', 'SETTINGS', C.mauve)}
+      {rows.map(r => (
+        <ui.Box flexDirection="row" justifyContent="space-between" alignItems="center">
+          <ui.Text color={r.isOn ? C.text : C.overlay0} wrap="truncate-end">
+            {r.label}
+          </ui.Text>
+          <ui.Button
+            key={`set-${r.id}`}
+            plain
+            dimColor={!r.isOn}
+            label={r.value}
+            onPress={() => changeSettings($, surface, r.patch)}
+          />
+        </ui.Box>
+      ))}
+      {gap(ui)}
+      <ui.Text color={C.overlay0} size="footnote">
+        {`These apply to ${surfaceName(surface)} only.`}
+      </ui.Text>
+    </ui.Box>
   )
 }
 
@@ -1978,7 +2083,7 @@ export const register: Register = on => {
     const { icons, paint } = look
     const C = look.c
     if ((await read($, paneViewAtom)) === 'settings') {
-      return settingsPage($, ui, look, e.surface, settings, await read($, cacheAtom))
+      return settingsPage($, ui, look, e.surface, settings, await read($, cacheAtom), await read($, settingsPageAtom))
     }
     const [snapshot, totals, breakdown, samples, activity, stream, agents, todos, git, work, frame, now] =
       await Promise.all([
@@ -2029,7 +2134,7 @@ export const register: Register = on => {
     const pct = ctx?.percent
     const pctShown = tween(snapshot?.prev?.percent, pct, t)
     const tokShown = tween(snapshot?.prev?.tokens, ctx?.tokens, t)
-    const legend = [...(breakdown?.slices ?? [])].sort((a, b) => b.tokens - a.tokens).slice(0, 4)
+    const legend = settings.legend ? [...(breakdown?.slices ?? [])].sort((a, b) => b.tokens - a.tokens).slice(0, 4) : []
     const note = settings.compactForecast
       ? compactNote(lastCompact, breakdown?.threshold, ctx?.tokens, ctxHistory, clock)
       : undefined
@@ -2055,15 +2160,17 @@ export const register: Register = on => {
     // activity
     const lastRate = stream.rates[stream.rates.length - 1]
     const shownRate = isWorking && frame.liveRate !== undefined ? frame.liveRate : lastRate
-    const recent = activity.slice(-SHOWN_ACTIVITY).reverse()
+    const recent = settings.recentCalls === 0 ? [] : activity.slice(-settings.recentCalls).reverse()
 
     // changes
     const showsGit = settings.git && git !== null
     const changed = settings.git ? [...files].reverse() : []
+    const shownFiles = settings.changedFiles
 
     // todos
     const done = todos.filter(x => x.status === 'completed').length
     const current = todos.find(x => x.status === 'in_progress')
+    const showsTodo = settings.todo && todos.length > 0
 
     const limitBarW = Math.max(6, W - 27)
     const versionLine = settings.versions
@@ -2072,79 +2179,84 @@ export const register: Register = on => {
           .join(' · ')
       : ''
 
-    return (
-      <Box flexDirection="column" paddingX={1}>
-        <Box flexDirection="row" justifyContent="space-between" alignItems="center">
-          <Box flexDirection="row" alignItems="center" flexShrink={1} minWidth={0}>
-            {pill(ui, look, { glyph: icons.sparkle, shape: 'sparkle' }, 'USAGE', C.mauve)}
-            {modelLine !== '' && (
-              <Text color={C.overlay0} wrap="truncate-end">
-                {` ${modelLine}`}
-              </Text>
-            )}
-          </Box>
-          <Box flexShrink={0}>
-            <Text wrap="truncate-end">
-              <Text color={liveColor}>{isWorking ? icons.dot : icons.dotIdle}</Text>
-              <Text color={isWorking ? C.teal : C.overlay0}>{isWorking ? ' live' : ' idle'}</Text>
-              <Text color={C.overlay0} tabular>{`  ${elapsed}`}</Text>
+    const header = (
+      <Box flexDirection="row" justifyContent="space-between" alignItems="center">
+        <Box flexDirection="row" alignItems="center" flexShrink={1} minWidth={0}>
+          {pill(ui, look, { glyph: icons.sparkle, shape: 'sparkle' }, 'USAGE', C.mauve)}
+          {settings.modelLine && modelLine !== '' && (
+            <Text color={C.overlay0} wrap="truncate-end">
+              {` ${modelLine}`}
             </Text>
-          </Box>
+          )}
         </Box>
-        {gap(ui)}
-
-        {sectionHeader(
-          ui,
-          look,
-          'context',
-          'CONTEXT',
-          thresholdColor(C, pct),
-          <Text tabular wrap="truncate-end">
-            <Text color={C.subtext}>
-              {ctx === undefined
-                ? '— / — '
-                : `${tokShown === undefined ? '—' : fmtTokens(tokShown)} / ${fmtTokens(ctx.window)} `}
-            </Text>
-            <Text color={hotColor(pct)} weight="semibold">
-              {pctText(pctShown)}
-            </Text>
-          </Text>,
-        )}
-        {drawCells(
-          ui,
-          contextCells(paint, W, pctShown, breakdown, ctx?.window ?? 0, isWorking ? frame.n : undefined, hotColor(pct)),
-        )}
-        {legend.length > 0 && (
-          <Text wrap="truncate-end" size="footnote">
-            {legend.map(s => (
-              <Text>
-                <Text color={sliceColor(paint, s.label)}>{icons.legend}</Text>
-                <Text color={C.overlay0}>{` ${s.label} ${fmtTokens(s.tokens)}  `}</Text>
-              </Text>
-            ))}
+        <Box flexShrink={0}>
+          <Text wrap="truncate-end">
+            <Text color={liveColor}>{isWorking ? icons.dot : icons.dotIdle}</Text>
+            <Text color={isWorking ? C.teal : C.overlay0}>{isWorking ? ' live' : ' idle'}</Text>
+            <Text color={C.overlay0} tabular>{`  ${elapsed}`}</Text>
           </Text>
-        )}
-        {(note !== undefined || showsCompact) && (
-          <Box flexDirection="row" justifyContent="space-between" alignItems="center">
-            <Box flexGrow={1} flexShrink={1} minWidth={0}>
-              <Text color={note?.startsWith('compacted') === true ? C.teal : C.overlay0} size="footnote" wrap="truncate-end">
-                {note ?? ' '}
-              </Text>
-            </Box>
-            {showsCompact && (
-              <Button
-                key="compact"
-                plain
-                dimColor={!isArmed}
-                label={isArmed ? 'press again to compact' : 'compact now'}
-                onPress={() => pressCompact($)}
-              />
-            )}
-          </Box>
-        )}
-        {gap(ui)}
+        </Box>
+      </Box>
+    )
 
-        {metricRow(ui, look, 'cache', 'CACHE', C.teal, [
+    const contextRows = !settings.context
+      ? []
+      : rowsOf(
+          sectionHeader(
+            ui,
+            look,
+            'context',
+            'CONTEXT',
+            thresholdColor(C, pct),
+            <Text tabular wrap="truncate-end">
+              <Text color={C.subtext}>
+                {ctx === undefined
+                  ? '— / — '
+                  : `${tokShown === undefined ? '—' : fmtTokens(tokShown)} / ${fmtTokens(ctx.window)} `}
+              </Text>
+              <Text color={hotColor(pct)} weight="semibold">
+                {pctText(pctShown)}
+              </Text>
+            </Text>,
+          ),
+          drawCells(
+            ui,
+            contextCells(paint, W, pctShown, breakdown, ctx?.window ?? 0, isWorking ? frame.n : undefined, hotColor(pct)),
+          ),
+          legend.length > 0 && (
+            <Text wrap="truncate-end" size="footnote">
+              {legend.map(s => (
+                <Text>
+                  <Text color={sliceColor(paint, s.label)}>{icons.legend}</Text>
+                  <Text color={C.overlay0}>{` ${s.label} ${fmtTokens(s.tokens)}  `}</Text>
+                </Text>
+              ))}
+            </Text>
+          ),
+          (note !== undefined || showsCompact) && (
+            <Box flexDirection="row" justifyContent="space-between" alignItems="center">
+              <Box flexGrow={1} flexShrink={1} minWidth={0}>
+                <Text color={note?.startsWith('compacted') === true ? C.teal : C.overlay0} size="footnote" wrap="truncate-end">
+                  {note ?? ' '}
+                </Text>
+              </Box>
+              {showsCompact && (
+                <Button
+                  key="compact"
+                  plain
+                  dimColor={!isArmed}
+                  label={isArmed ? 'press again to compact' : 'compact now'}
+                  onPress={() => pressCompact($)}
+                />
+              )}
+            </Box>
+          ),
+        )
+
+    // the one-line figures: each its own row, whichever of them are on
+    const metricRows = rowsOf(
+      settings.cache &&
+        metricRow(ui, look, 'cache', 'CACHE', C.teal, [
           <Text color={hitColor} weight="semibold" tabular>
             {hit === undefined ? '—' : `${hit}% hit`}
           </Text>,
@@ -2157,13 +2269,17 @@ export const register: Register = on => {
           ) : (
             <Text color={C.teal} tabular>{`  warm ${fmtSpan(warmLeft)}`}</Text>
           ),
-          <Text color={C.overlay0} tabular>{`  R ${fmtTokens(totals.cacheRead)}  W ${fmtTokens(totals.cacheWrite)}`}</Text>,
-        ])}
-        {metricRow(ui, look, 'tokens', 'TOKENS', C.blue, [
+          ...(settings.cacheDetail
+            ? [<Text color={C.overlay0} tabular>{`  R ${fmtTokens(totals.cacheRead)}  W ${fmtTokens(totals.cacheWrite)}`}</Text>]
+            : []),
+        ]),
+      settings.tokens &&
+        metricRow(ui, look, 'tokens', 'TOKENS', C.blue, [
           <Text color={C.text} tabular>{`↑ ${fmtTokens(totals.input)}  ↓ ${fmtTokens(totals.output)}`}</Text>,
           <Text color={C.overlay0} tabular>{`  ${totals.turns} turn${totals.turns === 1 ? '' : 's'}`}</Text>,
-        ])}
-        {metricRow(ui, look, 'cost', 'COST', C.peach, [
+        ]),
+      settings.cost &&
+        metricRow(ui, look, 'cost', 'COST', C.peach, [
           <Text color={C.peach} weight="semibold" tabular>
             {costShown === undefined ? '—' : `$${costShown.toFixed(2)}`}
           </Text>,
@@ -2173,162 +2289,181 @@ export const register: Register = on => {
               limits.length === 0 && tokPerHour !== undefined ? `  ${fmtTokens(tokPerHour)} tok/h` : '',
             ].join('')}
           </Text>,
-        ])}
-        {showsSpend &&
-          metricRow(ui, look, 'spend', 'SPEND', C.yellow, [
-            <Text color={C.yellow} weight="semibold" tabular>{`today ${fmtUsd(spent.today)}`}</Text>,
-            <Text color={C.overlay0} tabular>{`  wk ${fmtUsd(spent.week)}  `}</Text>,
-            ...runs(sparkCells(paint, spent.days, 7)).map(r => <Text color={r.color}>{r.ch}</Text>),
-          ])}
+        ]),
+      showsSpend &&
+        metricRow(ui, look, 'spend', 'SPEND', C.yellow, [
+          <Text color={C.yellow} weight="semibold" tabular>{`today ${fmtUsd(spent.today)}`}</Text>,
+          <Text color={C.overlay0} tabular>{`  wk ${fmtUsd(spent.week)}  `}</Text>,
+          ...(settings.spendBars ? runs(sparkCells(paint, spent.days, 7)).map(r => <Text color={r.color}>{r.ch}</Text>) : []),
+        ]),
+    )
 
-        {limits.length > 0 && gap(ui)}
-        {limits.length > 0 && sectionHeader(ui, look, 'limits', 'LIMITS', C.sapphire)}
-        {limits.map(l => {
-          const burn = burnFor(samples[l.kind], l.percentUsed, l.resetsAt, clock)
-          const resetIn = l.resetsAt === undefined ? undefined : Date.parse(l.resetsAt) - clock
-          const color = hotColor(l.percentUsed)
-          return (
+    const limitRows =
+      !settings.limits || limits.length === 0
+        ? []
+        : [
+            sectionHeader(ui, look, 'limits', 'LIMITS', C.sapphire),
+            ...limits.map(l => {
+              const burn = burnFor(samples[l.kind], l.percentUsed, l.resetsAt, clock)
+              const resetIn = l.resetsAt === undefined ? undefined : Date.parse(l.resetsAt) - clock
+              const color = hotColor(l.percentUsed)
+              return (
+                <Box flexDirection="row" alignItems="center">
+                  <Text color={C.subtext} wrap="truncate-end">{shortKind(l.kind).padEnd(3)}</Text>
+                  {drawCells(ui, barCells(C, limitBarW, l.percentUsed, color))}
+                  <Text color={color} weight="semibold" wrap="truncate-end" tabular>{` ${pctText(l.percentUsed).padStart(4)}`}</Text>
+                  {resetIn !== undefined && !Number.isNaN(resetIn) && iconLabel(ui, look, 'reset', C.overlay0, fmtSpan(resetIn), 2)}
+                  {burn !== undefined &&
+                    (burn.isShort ? (
+                      iconLabel(ui, look, 'warn', C.red, `~${fmtSpan(burn.etaMs)}`, 2)
+                    ) : (
+                      <Text color={C.green} wrap="truncate-end">{'  ✓'}</Text>
+                    ))}
+                </Box>
+              )
+            }),
+          ]
+
+    const activityRows = !settings.activity
+      ? []
+      : rowsOf(
+          sectionHeader(
+            ui,
+            look,
+            'activity',
+            'ACTIVITY',
+            C.lavender,
+            shownRate === undefined
+              ? undefined
+              : iconLabel(ui, look, 'speed', isWorking ? C.teal : C.overlay0, `${Math.round(shownRate)} tok/s`),
+          ),
+          settings.sparkline && stream.rates.length >= 2 && drawCells(ui, sparkCells(paint, stream.rates, W)),
+          ...recent.map(a => {
+            const glyph = statusGlyph(C, a.status, frame.n, look.pie)
+            const ms = a.status === 'running' ? clock - a.startedAt : (a.durationMs ?? 0)
+            // a new row lights up and fades to its colours over the first second
+            const age = frame.at - a.startedAt
+            const glow = isWorking && age >= 0 && age < FLASH_MS ? 1 - age / FLASH_MS : 0
+            return (
+              <Box flexDirection="row">
+                <Text color={glyph.color}>{`${glyph.ch} `}</Text>
+                <Text color={glow > 0 ? mix(C.blue, C.text, glow) : C.blue} weight={a.status === 'running' ? 'semibold' : 'regular'}>
+                  {toolName(a.tool).padEnd(8)}
+                </Text>
+                <Box flexGrow={1} flexShrink={1} minWidth={0}>
+                  <Text color={glow > 0 ? mix(C.subtext, C.text, glow) : C.subtext} wrap="truncate-end">
+                    {a.summary}
+                  </Text>
+                </Box>
+                <Text color={C.overlay0} tabular>{` ${fmtSeconds(ms)}`}</Text>
+              </Box>
+            )
+          }),
+          agents.running > 0 && (
             <Box flexDirection="row" alignItems="center">
-              <Text color={C.subtext} wrap="truncate-end">{shortKind(l.kind).padEnd(3)}</Text>
-              {drawCells(ui, barCells(C, limitBarW, l.percentUsed, color))}
-              <Text color={color} weight="semibold" wrap="truncate-end" tabular>{` ${pctText(l.percentUsed).padStart(4)}`}</Text>
-              {resetIn !== undefined && !Number.isNaN(resetIn) && iconLabel(ui, look, 'reset', C.overlay0, fmtSpan(resetIn), 2)}
-              {burn !== undefined &&
-                (burn.isShort ? (
-                  iconLabel(ui, look, 'warn', C.red, `~${fmtSpan(burn.etaMs)}`, 2)
-                ) : (
-                  <Text color={C.green} wrap="truncate-end">{'  ✓'}</Text>
-                ))}
-            </Box>
-          )
-        })}
-        {gap(ui)}
-
-        {sectionHeader(
-          ui,
-          look,
-          'activity',
-          'ACTIVITY',
-          C.lavender,
-          shownRate === undefined
-            ? undefined
-            : iconLabel(ui, look, 'speed', isWorking ? C.teal : C.overlay0, `${Math.round(shownRate)} tok/s`),
-        )}
-        {stream.rates.length >= 2 && drawCells(ui, sparkCells(paint, stream.rates, W))}
-        {recent.map(a => {
-          const glyph = statusGlyph(C, a.status, frame.n, look.pie)
-          const ms = a.status === 'running' ? clock - a.startedAt : (a.durationMs ?? 0)
-          // a new row lights up and fades to its colours over the first second
-          const age = frame.at - a.startedAt
-          const glow = isWorking && age >= 0 && age < FLASH_MS ? 1 - age / FLASH_MS : 0
-          return (
-            <Box flexDirection="row">
-              <Text color={glyph.color}>{`${glyph.ch} `}</Text>
-              <Text color={glow > 0 ? mix(C.blue, C.text, glow) : C.blue} weight={a.status === 'running' ? 'semibold' : 'regular'}>
-                {toolName(a.tool).padEnd(8)}
+              {icon(ui, look, 'agent', C.pink)}
+              <Text color={C.pink} wrap="truncate-end">
+                {` ${agents.running} agent${agents.running === 1 ? '' : 's'} running`}
+                {agents.names.length > 0 && <Text color={C.overlay0}>{` · ${agents.names.join(', ')}`}</Text>}
               </Text>
-              <Box flexGrow={1} flexShrink={1} minWidth={0}>
-                <Text color={glow > 0 ? mix(C.subtext, C.text, glow) : C.subtext} wrap="truncate-end">
-                  {a.summary}
-                </Text>
-              </Box>
-              <Text color={C.overlay0} tabular>{` ${fmtSeconds(ms)}`}</Text>
             </Box>
-          )
-        })}
-        {agents.running > 0 && (
-          <Box flexDirection="row" alignItems="center">
-            {icon(ui, look, 'agent', C.pink)}
-            <Text color={C.pink} wrap="truncate-end">
-              {` ${agents.running} agent${agents.running === 1 ? '' : 's'} running`}
-              {agents.names.length > 0 && <Text color={C.overlay0}>{` · ${agents.names.join(', ')}`}</Text>}
-            </Text>
-          </Box>
-        )}
-        {recent.length === 0 && stream.rates.length < 2 && agents.running === 0 && (
-          <Text color={C.overlay0}>no activity yet</Text>
-        )}
+          ),
+          activity.length === 0 && stream.rates.length < 2 && agents.running === 0 && (
+            <Text color={C.overlay0}>no activity yet</Text>
+          ),
+        )
 
-        {(showsGit || changed.length > 0 || todos.length > 0) && gap(ui)}
-        {showsGit && git !== null && (
-          <Box flexDirection="row" alignItems="center">
-            {icon(ui, look, 'branch', C.green)}
-            <Text wrap="truncate-end" size="footnote">
-              <Text color={C.green} weight="semibold">
-                {` ${clean(git.branch, 24)}`}
-              </Text>
-              <Text color={C.overlay0}>{git.ahead + git.behind > 0 ? ` ↑${git.ahead} ↓${git.behind}` : ''}</Text>
-              {git.added + git.removed > 0 && <Text color={C.green}>{`  +${git.added}`}</Text>}
-              {git.added + git.removed > 0 && <Text color={C.red}>{` −${git.removed}`}</Text>}
-              <Text color={C.overlay0}>{git.files > 0 ? ` · ${git.files} files` : ' · clean'}</Text>
+    // the work tree: the branch, the files this session changed, the todo list
+    const changeRows = rowsOf(
+      showsGit && git !== null && (
+        <Box flexDirection="row" alignItems="center">
+          {icon(ui, look, 'branch', C.green)}
+          <Text wrap="truncate-end" size="footnote">
+            <Text color={C.green} weight="semibold">
+              {` ${clean(git.branch, 24)}`}
             </Text>
-          </Box>
-        )}
-        {!showsGit && changed.length > 0 && (
-          <Box flexDirection="row" alignItems="center">
-            {icon(ui, look, 'files', C.green)}
-            <Text color={C.green} weight="semibold" size="footnote" wrap="truncate-end">
-              {` ${changed.length} file${changed.length === 1 ? '' : 's'} edited`}
-            </Text>
-          </Box>
-        )}
-        {changed.slice(0, SHOWN_FILES).map(f => {
-          const stat = statFor(f.path, git?.fileStats)
-          return (
-            <Box flexDirection="row" alignItems="center">
-              <Box flexGrow={1} flexShrink={1} minWidth={0}>
-                <Text color={C.subtext} size="footnote" wrap="truncate-end">
-                  {`  ${basename(f.path)}`}
-                </Text>
-              </Box>
-              <Box flexShrink={0}>
-                <Text size="footnote" wrap="truncate-end" tabular>
-                  {stat === 'new' && <Text color={C.green}>{' new'}</Text>}
-                  {stat !== undefined && stat !== 'new' && stat.added + stat.removed > 0 && (
-                    <Text>
-                      <Text color={C.green}>{` +${stat.added}`}</Text>
-                      <Text color={C.red}>{` −${stat.removed}`}</Text>
-                    </Text>
-                  )}
-                </Text>
-              </Box>
-            </Box>
-          )
-        })}
-        {changed.length > SHOWN_FILES && (
-          <Text color={C.overlay0} size="footnote">
-            {`  +${changed.length - SHOWN_FILES} more`}
+            <Text color={C.overlay0}>{git.ahead + git.behind > 0 ? ` ↑${git.ahead} ↓${git.behind}` : ''}</Text>
+            {git.added + git.removed > 0 && <Text color={C.green}>{`  +${git.added}`}</Text>}
+            {git.added + git.removed > 0 && <Text color={C.red}>{` −${git.removed}`}</Text>}
+            <Text color={C.overlay0}>{git.files > 0 ? ` · ${git.files} files` : ' · clean'}</Text>
           </Text>
-        )}
-        {todos.length > 0 && (
-          <Box flexDirection="row" alignItems="center">
-            {icon(ui, look, 'todo', C.lavender)}
-            <Text color={C.lavender} weight="semibold" wrap="truncate-end">{' TODO '}</Text>
-            {drawCells(ui, barCells(C, 12, (done / todos.length) * 100, C.lavender))}
-            <Text color={C.text} tabular>{` ${done}/${todos.length}`}</Text>
-          </Box>
-        )}
-        {current !== undefined && (
-          <Text color={C.subtext} wrap="truncate-end" size="footnote">
-            {`  → ${current.activeForm ?? current.subject}`}
-          </Text>
-        )}
-
-        {gap(ui)}
-        <Box flexDirection="row" justifyContent="space-between" alignItems="center">
-          <Button
-            key="open-settings"
-            plain
-            dimColor
-            label={`${icons.gear} settings`}
-            onPress={() => update($, paneViewAtom, () => 'settings')}
-          />
-          {versionLine !== '' && (
-            <Text color={C.overlay0} size="footnote" wrap="truncate-end">
-              {versionLine}
-            </Text>
-          )}
         </Box>
+      ),
+      !showsGit && changed.length > 0 && (
+        <Box flexDirection="row" alignItems="center">
+          {icon(ui, look, 'files', C.green)}
+          <Text color={C.green} weight="semibold" size="footnote" wrap="truncate-end">
+            {` ${changed.length} file${changed.length === 1 ? '' : 's'} edited`}
+          </Text>
+        </Box>
+      ),
+      ...changed.slice(0, shownFiles).map(f => {
+        const stat = statFor(f.path, git?.fileStats)
+        return (
+          <Box flexDirection="row" alignItems="center">
+            <Box flexGrow={1} flexShrink={1} minWidth={0}>
+              <Text color={C.subtext} size="footnote" wrap="truncate-end">
+                {`  ${basename(f.path)}`}
+              </Text>
+            </Box>
+            <Box flexShrink={0}>
+              <Text size="footnote" wrap="truncate-end" tabular>
+                {stat === 'new' && <Text color={C.green}>{' new'}</Text>}
+                {stat !== undefined && stat !== 'new' && stat.added + stat.removed > 0 && (
+                  <Text>
+                    <Text color={C.green}>{` +${stat.added}`}</Text>
+                    <Text color={C.red}>{` −${stat.removed}`}</Text>
+                  </Text>
+                )}
+              </Text>
+            </Box>
+          </Box>
+        )
+      }),
+      shownFiles > 0 && changed.length > shownFiles && (
+        <Text color={C.overlay0} size="footnote">
+          {`  +${changed.length - shownFiles} more`}
+        </Text>
+      ),
+      showsTodo && (
+        <Box flexDirection="row" alignItems="center">
+          {icon(ui, look, 'todo', C.lavender)}
+          <Text color={C.lavender} weight="semibold" wrap="truncate-end">{' TODO '}</Text>
+          {drawCells(ui, barCells(C, 12, (done / todos.length) * 100, C.lavender))}
+          <Text color={C.text} tabular>{` ${done}/${todos.length}`}</Text>
+        </Box>
+      ),
+      showsTodo && current !== undefined && (
+        <Text color={C.subtext} wrap="truncate-end" size="footnote">
+          {`  → ${current.activeForm ?? current.subject}`}
+        </Text>
+      ),
+    )
+
+    const footer = (
+      <Box flexDirection="row" justifyContent="space-between" alignItems="center">
+        <Button
+          key="open-settings"
+          plain
+          dimColor
+          label={`${icons.gear} settings`}
+          onPress={() => update($, paneViewAtom, () => 'settings')}
+        />
+        {versionLine !== '' && (
+          <Text color={C.overlay0} size="footnote" wrap="truncate-end">
+            {versionLine}
+          </Text>
+        )}
+      </Box>
+    )
+
+    // A section that is off, or has nothing to say, leaves no gap behind.
+    const sections = [[header], contextRows, metricRows, limitRows, activityRows, changeRows, [footer]].filter(
+      rows => rows.length > 0,
+    )
+    return (
+      <Box flexDirection="column" paddingX={1}>
+        {sections.flatMap((rows, i) => (i === 0 ? rows : [gap(ui), ...rows]))}
       </Box>
     )
   })
