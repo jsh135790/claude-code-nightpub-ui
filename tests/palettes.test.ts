@@ -1,7 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 
 import { DEFAULT_LOOK, LOOKS, LOOK_IDS, toChoice } from '../hooks/looks'
-import { PALETTES, PALETTE_IDS, desktopColors, publicPalette } from '../hooks/palettes'
+import { PALETTES, PALETTE_IDS, desktopColors } from '../hooks/palettes'
 
 test('Desktop paints every palette', async () => {
   for (const id of PALETTE_IDS) {
@@ -12,11 +12,10 @@ test('Desktop paints every palette', async () => {
   }
 })
 
-test('other mods read NightPub’s own values, not the Desktop adjustment', async () => {
+test('Desktop gets muted text brighter than NightPub ships it', async () => {
   for (const id of PALETTE_IDS) {
     const palette = PALETTES[id]
 
-    expect(publicPalette(palette).textMuted).toBe(palette.textMuted)
     expect(palette.desktop.textMuted).not.toBe(palette.textMuted)
   }
 })

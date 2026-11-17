@@ -1,9 +1,8 @@
 import type { ThemeColors } from 'claude-code'
 
-import type { NightpubPalette } from '../types'
 import { makeColors } from './make-colors.js'
 
-export type PaletteId = NightpubPalette['id']
+export type PaletteId = 'ink' | 'tavern' | 'midnight'
 
 /**
  * One NightPub dark theme: its tokens as NightPub ships them
@@ -36,7 +35,7 @@ export type Palette = {
    * What Desktop draws in place of two tokens. Its contrast check wants muted
    * text brighter than NightPub's on every fill, so the menu layer folds into
    * `raised` and muted text moves a third of the way toward secondary. The
-   * terminal themes and the palette other mods read keep NightPub's values.
+   * terminal themes keep NightPub's values.
    */
   desktop: { surface3: string; textMuted: string }
 }
@@ -158,22 +157,4 @@ export function desktopColors(palette: Palette): { theme: ThemeColors; problems:
   made.set(palette.id, colors)
 
   return colors
-}
-
-/** The palette as other mods read it from `$.state`. */
-export function publicPalette(palette: Palette): NightpubPalette {
-  return {
-    id: palette.id,
-    label: palette.label,
-    canvas: palette.canvas,
-    surface: palette.surface,
-    raised: palette.raised,
-    textPrimary: palette.textPrimary,
-    textMuted: palette.textMuted,
-    accent: palette.accent,
-    danger: palette.danger,
-    warning: palette.warning,
-    success: palette.success,
-    info: palette.info,
-  }
 }
