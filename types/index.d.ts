@@ -156,7 +156,7 @@ export type Frame = { n: number; at: number; phase: Phase; liveRate?: number }
 
 declare module 'claude-code' {
   interface PluginState {
-    'capsule-panel': {
+    'nightpub-ui': {
       snapshot: UsageSnapshot | null
       totals: SessionTotals
       isPaneDismissed: boolean

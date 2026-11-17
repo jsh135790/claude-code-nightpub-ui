@@ -21,8 +21,8 @@ const BAND_PROPS: RenderPropsOf['AbovePrompt'] = {
   view: {},
 }
 
-const PANE = { plugin: 'capsule-panel', component: 'Pane', props: PANE_PROPS, requestId: 'capsule-panel' } as const
-const BAND = { plugin: 'capsule-panel', component: 'AbovePrompt', props: BAND_PROPS } as const
+const PANE = { plugin: 'nightpub-ui', component: 'Pane', props: PANE_PROPS, requestId: 'nightpub-ui' } as const
+const BAND = { plugin: 'nightpub-ui', component: 'AbovePrompt', props: BAND_PROPS } as const
 const WORKING_BAND = { ...BAND, props: { ...BAND_PROPS, isWorking: true } } as const
 
 const GREEN = '#a6e3a1'
@@ -152,12 +152,12 @@ const engine = (on: On, panes: UiPane[] = [], opts: EngineOptions = {}) => {
   }
   on('store.get', ($, e) => ({ value: e.key in store ? store[e.key] : seeds[e.key] }))
   // a test that never starts the session reads the settings before any were loaded
-  on('state.get', { plugin: 'capsule-panel', key: 'settings' }, async ($, e, next) => {
+  on('state.get', { plugin: 'nightpub-ui', key: 'settings' }, async ($, e, next) => {
     const got = await next(e)
     if (opts.fresh === true || got.value === undefined || got.value.version !== 0) return got
     return { value: { value: { terminal: EVERYTHING, desktop: EVERYTHING }, version: 0 } }
   })
-  on('state.get', { plugin: 'capsule-panel', key: 'look' }, async ($, e, next) => {
+  on('state.get', { plugin: 'nightpub-ui', key: 'look' }, async ($, e, next) => {
     const got = await next(e)
     if (opts.fresh === true || got.value === undefined || got.value.version !== 0) return got
     return { value: { value: NO_LOOK, version: 0 } }
@@ -830,7 +830,7 @@ test('the sound setting turned off keeps a completed turn quiet', async ($, on) 
 })
 
 test('/panel opens the pane, and closes it once it is up', async ($, on) => {
-  const placed: UiPane = { id: 'capsule-panel', title: 'Usage', isShown: true, isFocused: false, isPlaced: true }
+  const placed: UiPane = { id: 'nightpub-ui', title: 'Usage', isShown: true, isFocused: false, isPlaced: true }
   const { closed } = engine(on, [placed])
   const clock = mock.clock(on, { now: 1_000_000 })
   await $.session.start({ cwd: 'C:/', surface: 'terminal', isInteractive: true })
@@ -843,7 +843,7 @@ test('/panel opens the pane, and closes it once it is up', async ($, on) => {
       presentation: { isFullscreen: true, columns: 160 },
     })
   expect((await run()).text).toMatch(/closed/)
-  expect(closed).toEqual(['capsule-panel'])
+  expect(closed).toEqual(['nightpub-ui'])
 })
 
 test('/panel opens the pane while it is not up', async ($, on) => {
@@ -1298,14 +1298,14 @@ test('what 0.4.1 stored reads back over the new defaults', async ($, on) => {
 // ── the look ──────────────────────────────────────────────────────────────
 
 const BACKDROP = {
-  plugin: 'capsule-panel',
+  plugin: 'nightpub-ui',
   component: 'Backdrop',
   requestId: 'backdrop',
-  props: { scene: 'glyph-sea', plugin: 'capsule-panel', glass: { blur: 16, opacity: 0.6 } },
+  props: { scene: 'glyph-sea', plugin: 'nightpub-ui', glass: { blur: 16, opacity: 0.6 } },
 } as const
 
 const SPINNER = {
-  plugin: 'capsule-panel',
+  plugin: 'nightpub-ui',
   component: 'Spinner',
   requestId: 'spinner',
   props: { word: 'Working', message: null, suffix: '…', mode: 'responding' },

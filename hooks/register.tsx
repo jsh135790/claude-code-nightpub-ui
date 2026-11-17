@@ -41,7 +41,7 @@ import type { Palette } from './palettes'
 import { tellStatusline } from './statusline'
 import { wave } from './spinner'
 
-const PANE_ID = 'capsule-panel'
+const PANE_ID = 'nightpub-ui'
 const PANE_TITLE = 'Usage'
 const PANE_COLUMNS = 46
 const TICK_MS = 120
@@ -326,32 +326,32 @@ const NO_SPEND: SpendTotals = { today: 0, week: 0, days: [0, 0, 0, 0, 0, 0, 0] }
 const FRESH_SPEND: SpendState = { owner: '', day: '', base: 0, lastUsd: 0, others: NO_SPEND }
 const FRESH_CACHE: CacheClock = { autoTtlMs: TTL_5M }
 
-const snapshotAtom = atom({ plugin: 'capsule-panel', key: 'snapshot' } as const, null)
-const totalsAtom = atom({ plugin: 'capsule-panel', key: 'totals' } as const, EMPTY_TOTALS)
-const settingsAtom = atom({ plugin: 'capsule-panel', key: 'settings' } as const, {})
-const paneViewAtom = atom({ plugin: 'capsule-panel', key: 'paneView' } as const, 'dash')
-const settingsPageAtom = atom({ plugin: 'capsule-panel', key: 'settingsPage' } as const, 'look')
-const lookAtom = atom({ plugin: 'capsule-panel', key: 'look' } as const, DEFAULT_LOOK)
-const modelInfoAtom = atom({ plugin: 'capsule-panel', key: 'modelInfo' } as const, {})
-const versionsAtom = atom({ plugin: 'capsule-panel', key: 'versions' } as const, {})
-const cacheAtom = atom({ plugin: 'capsule-panel', key: 'cacheClock' } as const, FRESH_CACHE)
-const spendAtom = atom({ plugin: 'capsule-panel', key: 'spend' } as const, FRESH_SPEND)
-const ctxHistoryAtom = atom({ plugin: 'capsule-panel', key: 'ctxHistory' } as const, [])
-const lastCompactAtom = atom({ plugin: 'capsule-panel', key: 'lastCompact' } as const, null)
-const compactArmedAtom = atom({ plugin: 'capsule-panel', key: 'compactArmedUntil' } as const, 0)
-const filesAtom = atom({ plugin: 'capsule-panel', key: 'files' } as const, [])
-const dismissedAtom = atom({ plugin: 'capsule-panel', key: 'isPaneDismissed' } as const, false)
-const nowAtom = atom({ plugin: 'capsule-panel', key: 'now' } as const, 0)
-const breakdownAtom = atom({ plugin: 'capsule-panel', key: 'breakdown' } as const, null)
-const samplesAtom = atom({ plugin: 'capsule-panel', key: 'rateSamples' } as const, {})
-const warningsAtom = atom({ plugin: 'capsule-panel', key: 'limitWarnings' } as const, {})
-const activityAtom = atom({ plugin: 'capsule-panel', key: 'activity' } as const, [])
-const streamAtom = atom({ plugin: 'capsule-panel', key: 'stream' } as const, { rates: [] })
-const agentsAtom = atom({ plugin: 'capsule-panel', key: 'agents' } as const, { running: 0, names: [] })
-const todosAtom = atom({ plugin: 'capsule-panel', key: 'todos' } as const, [])
-const gitAtom = atom({ plugin: 'capsule-panel', key: 'git' } as const, null)
-const workAtom = atom({ plugin: 'capsule-panel', key: 'work' } as const, IDLE_WORK)
-const frameAtom = atom({ plugin: 'capsule-panel', key: 'frame' } as const, IDLE_FRAME)
+const snapshotAtom = atom({ plugin: 'nightpub-ui', key: 'snapshot' } as const, null)
+const totalsAtom = atom({ plugin: 'nightpub-ui', key: 'totals' } as const, EMPTY_TOTALS)
+const settingsAtom = atom({ plugin: 'nightpub-ui', key: 'settings' } as const, {})
+const paneViewAtom = atom({ plugin: 'nightpub-ui', key: 'paneView' } as const, 'dash')
+const settingsPageAtom = atom({ plugin: 'nightpub-ui', key: 'settingsPage' } as const, 'look')
+const lookAtom = atom({ plugin: 'nightpub-ui', key: 'look' } as const, DEFAULT_LOOK)
+const modelInfoAtom = atom({ plugin: 'nightpub-ui', key: 'modelInfo' } as const, {})
+const versionsAtom = atom({ plugin: 'nightpub-ui', key: 'versions' } as const, {})
+const cacheAtom = atom({ plugin: 'nightpub-ui', key: 'cacheClock' } as const, FRESH_CACHE)
+const spendAtom = atom({ plugin: 'nightpub-ui', key: 'spend' } as const, FRESH_SPEND)
+const ctxHistoryAtom = atom({ plugin: 'nightpub-ui', key: 'ctxHistory' } as const, [])
+const lastCompactAtom = atom({ plugin: 'nightpub-ui', key: 'lastCompact' } as const, null)
+const compactArmedAtom = atom({ plugin: 'nightpub-ui', key: 'compactArmedUntil' } as const, 0)
+const filesAtom = atom({ plugin: 'nightpub-ui', key: 'files' } as const, [])
+const dismissedAtom = atom({ plugin: 'nightpub-ui', key: 'isPaneDismissed' } as const, false)
+const nowAtom = atom({ plugin: 'nightpub-ui', key: 'now' } as const, 0)
+const breakdownAtom = atom({ plugin: 'nightpub-ui', key: 'breakdown' } as const, null)
+const samplesAtom = atom({ plugin: 'nightpub-ui', key: 'rateSamples' } as const, {})
+const warningsAtom = atom({ plugin: 'nightpub-ui', key: 'limitWarnings' } as const, {})
+const activityAtom = atom({ plugin: 'nightpub-ui', key: 'activity' } as const, [])
+const streamAtom = atom({ plugin: 'nightpub-ui', key: 'stream' } as const, { rates: [] })
+const agentsAtom = atom({ plugin: 'nightpub-ui', key: 'agents' } as const, { running: 0, names: [] })
+const todosAtom = atom({ plugin: 'nightpub-ui', key: 'todos' } as const, [])
+const gitAtom = atom({ plugin: 'nightpub-ui', key: 'git' } as const, null)
+const workAtom = atom({ plugin: 'nightpub-ui', key: 'work' } as const, IDLE_WORK)
+const frameAtom = atom({ plugin: 'nightpub-ui', key: 'frame' } as const, IDLE_FRAME)
 
 // ── formatting ────────────────────────────────────────────────────────────
 
@@ -1921,7 +1921,7 @@ export const register: Register = on => {
     try {
       await $.command.register({ name: 'panel', description: 'Toggle the usage panel', immediate: true })
     } catch (error) {
-      $.ui.toast(`capsule-panel: /panel failed to register ${String(error)}`)
+      $.ui.toast(`nightpub-ui: /panel failed to register ${String(error)}`)
     }
 
     // The look before anything draws in it. A look that is off stays off:

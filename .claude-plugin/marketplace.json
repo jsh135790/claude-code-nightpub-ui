@@ -1,14 +1,16 @@
 {
-  "name": "capsule-panel",
-  "owner": { "name": "jsh135790" },
+  "name": "nightpub-ui",
+  "owner": {
+    "name": "jsh135790"
+  },
   "metadata": {
-    "description": "A live usage dashboard for Claude Code, in a Catppuccin capsule-style side pane, plus a live band above the prompt while Claude works."
+    "description": "NightPub's dark look for Claude Code and Claude Desktop, with a live usage panel that wears it."
   },
   "plugins": [
     {
-      "name": "capsule-panel",
+      "name": "nightpub-ui",
       "source": "./",
-      "description": "Live usage dashboard: context, cache, rate limits, cost and activity in a capsule-style pane, plus a live band above the prompt while Claude works."
+      "description": "NightPub's dark look for Claude Code with a live usage panel: three palettes, two animated backgrounds, and a pane for context, cost, rate limits and activity, plus a live band above the prompt while Claude works. Everything is chosen on the pane's settings page."
     }
   ]
 }

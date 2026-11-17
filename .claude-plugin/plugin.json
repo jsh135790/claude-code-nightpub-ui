@@ -1,11 +1,21 @@
 {
-  "name": "capsule-panel",
-  "version": "0.4.1",
-  "description": "Live usage dashboard: context, cache, rate limits, cost and activity in a capsule-style pane, plus a live band above the prompt while Claude works. Settings live in the pane, per surface.",
-  "author": { "name": "jsh135790" },
-  "homepage": "https://github.com/jsh135790/claude-code-capsule-panel",
-  "repository": "https://github.com/jsh135790/claude-code-capsule-panel",
+  "name": "nightpub-ui",
+  "version": "0.5.0",
+  "description": "NightPub's dark look for Claude Code with a live usage panel: three palettes, two animated backgrounds, and a pane for context, cost, rate limits and activity, plus a live band above the prompt while Claude works. Everything is chosen on the pane's settings page.",
+  "author": {
+    "name": "jsh135790"
+  },
+  "homepage": "https://github.com/jsh135790/claude-code-nightpub-ui",
+  "repository": "https://github.com/jsh135790/claude-code-nightpub-ui",
   "license": "MIT",
-  "keywords": ["dashboard", "usage", "context", "rate-limit", "catppuccin", "nerd-fonts"],
+  "keywords": [
+    "theme",
+    "backdrop",
+    "dashboard",
+    "usage",
+    "context",
+    "rate-limit",
+    "nerd-fonts"
+  ],
   "types": "./types/index.d.ts"
 }
