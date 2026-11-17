@@ -13,6 +13,7 @@ const PANE_PROPS: RenderPropsOf['Pane'] = {
 
 const BAND_PROPS: RenderPropsOf['AbovePrompt'] = {
   hasSurvey: false,
+  isCollapsed: false,
   isWorking: false,
   maxRows: 10,
   bodyColumns: 100,
@@ -632,7 +633,8 @@ test('the band keeps to one line: only the detail gives way', async ($, on) => {
   await clock.advance(240)
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ ...WORKING_BAND, props: { ...BAND_PROPS, isWorking: true, bodyColumns: 60 }, surface })
-    const [root] = await ui.findAll({ type: 'Box' })
+    // the engine stacks the band's rows in a column of its own: the row is the first box laid as a row
+    const root = (await ui.findAll({ type: 'Box' })).find(box => box.props.flexDirection === 'row')
     expect(root?.props.width).toBe(surface === 'terminal' ? 60 : '100%')
     const parts = (root?.children ?? []).filter(
       (c): c is { type: string; props: Record<string, unknown> } => typeof c === 'object' && c !== null && 'props' in c,
