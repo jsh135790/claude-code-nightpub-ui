@@ -1,4 +1,4 @@
-import type { On, RenderPropsOf, RenderSurface, TurnUsage, UiPane } from 'claude-code'
+import type { On, RenderPropsOf, RenderSurface, ThemeSetArgs, TurnUsage, UiPane } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 
@@ -42,8 +42,10 @@ const PUA = new RegExp(
 const BLOCKS = /[▀-▟]/
 
 // Every section and every detail, as 0.4.1 drew them before any could be
-// turned off. The tests written for that run with these on both surfaces; a
-// test of what a new install shows passes `fresh`.
+// turned off, and no look: the panel in its own colours. The tests written
+// for that run with these on both surfaces; a test of what a new install
+// shows passes `fresh`.
+const NO_LOOK = { palette: 'off', scene: 'none' } as const
 const EVERYTHING = {
   modelLine: true,
   legend: true,
@@ -128,9 +130,9 @@ const engine = (on: On, panes: UiPane[] = [], opts: EngineOptions = {}) => {
   on('env.get', ($, e) => ({ value: env[e.name] }))
   // what stands in the store where the test put nothing: EVERYTHING, unless fresh
   const seeds: Record<string, unknown> =
-    opts.fresh === true ? {} : { 'settings.terminal': EVERYTHING, 'settings.desktop': EVERYTHING }
-  for (const key of Object.keys(seeds)) {
-    if (key in store) store[key] = { ...EVERYTHING, ...(store[key] as object) }
+    opts.fresh === true ? {} : { 'settings.terminal': EVERYTHING, 'settings.desktop': EVERYTHING, look: NO_LOOK }
+  for (const key of ['settings.terminal', 'settings.desktop']) {
+    if (key in seeds && key in store) store[key] = { ...EVERYTHING, ...(store[key] as object) }
   }
   on('store.get', ($, e) => ({ value: e.key in store ? store[e.key] : seeds[e.key] }))
   // a test that never starts the session reads the settings before any were loaded
@@ -139,6 +141,23 @@ const engine = (on: On, panes: UiPane[] = [], opts: EngineOptions = {}) => {
     if (opts.fresh === true || got.value === undefined || got.value.version !== 0) return got
     return { value: { value: { terminal: EVERYTHING, desktop: EVERYTHING }, version: 0 } }
   })
+  on('state.get', { plugin: 'capsule-panel', key: 'look' }, async ($, e, next) => {
+    const got = await next(e)
+    if (opts.fresh === true || got.value === undefined || got.value.version !== 0) return got
+    return { value: { value: NO_LOOK, version: 0 } }
+  })
+  // a client that draws themes, and what the plugin asked of it
+  const theme = { sets: [] as ThemeSetArgs[], clears: 0 }
+  on('theme.set', ($, e) => {
+    theme.sets.push(e)
+    return { value: { isDrawn: true, requestId: 'backdrop' } }
+  })
+  on('theme.clear', () => {
+    theme.clears += 1
+    return { value: { isDrawn: false, reason: 'cleared' } }
+  })
+  // the engine's own spinner: the words it is handed
+  on('ui.render', { component: 'Spinner' }, ($, e) => ({ type: 'Text', children: [e.props.message ?? e.props.word] }))
   on('store.set', ($, e) => {
     store[e.key] = e.value
     return { value: undefined }
@@ -178,7 +197,7 @@ const engine = (on: On, panes: UiPane[] = [], opts: EngineOptions = {}) => {
     return { value: undefined }
   })
   on('ui.render', { component: 'AbovePrompt' }, () => ({ type: 'Box' }))
-  return { closed, toasts, played, runs, notes, compacts, store, steps, session }
+  return { closed, toasts, played, runs, notes, compacts, store, steps, session, theme }
 }
 
 /** A call left running: the test ends with it under way, and what its teardown makes of it is nobody's to handle. */
@@ -734,6 +753,10 @@ test('the settings page changes one surface, and the store keeps it', async ($, 
   await settings.press({ key: 'tab-look' })
   await settings.redraw()
   expect(await settings.find({ key: 'set-icons' })).toBeUndefined()
+  // the look is everyone's; the other two pages are this surface's own
+  expect(await settings.find({ type: 'Text', text: /the same on every surface/ })).toBeDefined()
+  await settings.press({ key: 'tab-panel' })
+  await settings.redraw()
   expect(await settings.find({ type: 'Text', text: /Claude Desktop only/ })).toBeDefined()
   await desktop.unmount()
   await settings.unmount()
@@ -1254,4 +1277,257 @@ test('what 0.4.1 stored reads back over the new defaults', async ($, on) => {
   expect((await ui.find({ key: 'set-cacheTtl' }))?.props.label).toBe('5m')
   expect((await ui.find({ key: 'set-recentCalls' }))?.props.label).toBe('3')
   await ui.unmount()
+})
+
+// ── the look ──────────────────────────────────────────────────────────────
+
+const BACKDROP = {
+  plugin: 'capsule-panel',
+  component: 'Backdrop',
+  requestId: 'backdrop',
+  props: { scene: 'glyph-sea', plugin: 'capsule-panel', glass: { blur: 16, opacity: 0.6 } },
+} as const
+
+const SPINNER = {
+  plugin: 'capsule-panel',
+  component: 'Spinner',
+  requestId: 'spinner',
+  props: { word: 'Working', message: null, suffix: '…', mode: 'responding' },
+} as const
+
+const DESKTOP_START = { cwd: 'C:/work', surface: 'desktop', isInteractive: true } as const
+const TERMINAL_START = { cwd: 'C:/work', surface: 'terminal', isInteractive: true } as const
+
+// ink and paper, as NightPub ships it
+const INK = { canvas: '#121212', accent: '#a3b6dc', info: '#7dbcb4', success: '#80b98b' }
+
+/** Every colour a drawing names, lowercased: its Text colours and what its SVGs are filled and stroked with. */
+const coloursOf = async (ui: { findAll: (query: { type: string }) => Promise<{ props: Record<string, unknown> }[]> }) => {
+  const found = new Set<string>()
+  for (const text of await ui.findAll({ type: 'Text' })) {
+    for (const name of ['color', 'backgroundColor']) {
+      if (typeof text.props[name] === 'string') found.add(String(text.props[name]).toLowerCase())
+    }
+  }
+  for (const svg of await ui.findAll({ type: 'Svg' })) {
+    for (const hex of String(svg.props.source).match(/#[0-9a-f]{6}/gi) ?? []) found.add(hex.toLowerCase())
+  }
+  return found
+}
+
+test('a new install starts in ink over the glyph sea, and the panel wears it', async ($, on) => {
+  const { theme } = engine(on, [], { fresh: true, surfaces: ['desktop'] })
+  const clock = mock.clock(on, { now: 1_000_000 })
+  await $.session.start(DESKTOP_START)
+  await clock.settle()
+  expect(theme.sets.length).toBe(1)
+  expect(theme.sets[0]?.backdrop).toEqual({ scene: 'glyph-sea' })
+  expect(theme.sets[0]?.colors).toBeDefined()
+  expect(theme.clears).toBe(0)
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  const colours = await coloursOf(ui)
+  // the capsule in the accent with the ground's ink on it, and none of Catppuccin left
+  expect(colours.has(INK.accent)).toBe(true)
+  expect(colours.has(INK.canvas)).toBe(true)
+  for (const mocha of [MAUVE, BLUE, TEAL, GREEN, YELLOW, RED, '#1e1e2e', '#6c7086', '#a6adc8', '#cdd6f4']) {
+    expect(colours.has(mocha)).toBe(false)
+  }
+  await ui.unmount()
+})
+
+test('the backdrop is the scene chosen, in the palette chosen, where a surface draws one', async ($, on) => {
+  engine(on, [], { fresh: true, surfaces: ['desktop'], store: { look: { palette: 'tavern', scene: 'pixel-night' } } })
+  const clock = mock.clock(on, { now: 1_000_000 })
+  await $.session.start(DESKTOP_START)
+  await clock.settle()
+  const night = { ...BACKDROP, props: { ...BACKDROP.props, scene: 'pixel-night' } }
+  for (const surface of ['desktop', 'mobile'] as const) {
+    const ui = await $.ui.mount({ ...night, surface })
+    const svg = await ui.find({ type: 'Svg' })
+    expect(String(svg?.props.source)).toContain('fill="#d9a55a"')
+    expect(String(svg?.props.alt)).toMatch(/pixel night/)
+    await ui.unmount()
+  }
+  // another scene, another mod's scene, a surface with no backdrop: not this hook's to draw
+  for (const other of [
+    { ...BACKDROP, surface: 'desktop' as const },
+    { ...night, props: { ...night.props, plugin: 'someone-else' }, surface: 'desktop' as const },
+    { ...night, surface: 'terminal' as const },
+  ]) {
+    const ui = await $.ui.mount(other)
+    expect(await ui.find({ type: 'Svg' })).toBeUndefined()
+    await ui.unmount()
+  }
+})
+
+test('the Look page changes the palette and the background for every surface', async ($, on) => {
+  const { store, theme } = engine(on, [], { fresh: true, surfaces: ['desktop'] })
+  const clock = mock.clock(on, { now: 1_000_000 })
+  await $.session.start(DESKTOP_START)
+  await clock.settle()
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.press({ key: 'open-settings' })
+  await ui.redraw()
+  expect((await ui.find({ key: 'set-palette' }))?.props.label).toBe('ink')
+  expect((await ui.find({ key: 'set-scene' }))?.props.label).toBe('glyph sea')
+  expect(await ui.find({ type: 'Text', text: /the same on every surface/ })).toBeDefined()
+  // the desktop has no icon set and no spinner wave of its own
+  expect(await ui.find({ key: 'set-icons' })).toBeUndefined()
+  expect(await ui.find({ key: 'set-spinnerWave' })).toBeUndefined()
+
+  await ui.press({ key: 'set-palette' })
+  await ui.press({ key: 'set-scene' })
+  await clock.settle()
+  await ui.redraw()
+  expect((await ui.find({ key: 'set-palette' }))?.props.label).toBe('tavern')
+  expect((await ui.find({ key: 'set-scene' }))?.props.label).toBe('pixel night')
+  // one key for every surface, beside the settings each surface keeps
+  expect(store.look).toEqual({ palette: 'tavern', scene: 'pixel-night' })
+  expect(store['settings.desktop']).toBeUndefined()
+  expect(theme.sets.at(-1)?.backdrop).toEqual({ scene: 'pixel-night' })
+
+  // no background: the palette's colours with nothing behind them
+  await ui.press({ key: 'set-scene' })
+  await clock.settle()
+  await ui.redraw()
+  expect((await ui.find({ key: 'set-scene' }))?.props.label).toBe('none')
+  expect(theme.sets.at(-1)?.colors).toBeDefined()
+  expect(theme.sets.at(-1)?.backdrop).toBeUndefined()
+  expect(theme.clears).toBe(0)
+  await ui.unmount()
+
+  // the terminal's pane shows the same look, and its own two rows
+  const terminal = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await terminal.redraw()
+  expect((await terminal.find({ key: 'set-palette' }))?.props.label).toBe('tavern')
+  expect(await terminal.find({ key: 'set-icons' })).toBeDefined()
+  expect(await terminal.find({ key: 'set-spinnerWave' })).toBeDefined()
+  expect(await terminal.find({ type: 'Text', text: /pick "NightPub · 酒馆暖光"/ })).toBeDefined()
+  await terminal.unmount()
+})
+
+test('the palette turned off clears the theme once, and the next start sets none', async ($, on) => {
+  const { store, theme } = engine(on, [], { fresh: true, surfaces: ['desktop'], store: { look: { palette: 'midnight', scene: 'glyph-sea' } } })
+  const clock = mock.clock(on, { now: 1_000_000 })
+  await $.session.start(DESKTOP_START)
+  await clock.settle()
+  expect(theme.sets.length).toBe(1)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.press({ key: 'open-settings' })
+  await ui.redraw()
+  // midnight is the last palette: the next step is off
+  await ui.press({ key: 'set-palette' })
+  await clock.settle()
+  await ui.redraw()
+  expect((await ui.find({ key: 'set-palette' }))?.props.label).toBe('off')
+  expect(theme.clears).toBe(1)
+  expect(theme.sets.length).toBe(1)
+  // the background is kept for when a palette comes back, and waits dim
+  expect(store.look).toEqual({ palette: 'off', scene: 'glyph-sea' })
+  expect((await ui.find({ key: 'set-scene' }))?.props.dimColor).toBe(true)
+  // the panel is back in its own colours
+  await ui.press({ key: 'settings-back' })
+  await ui.redraw()
+  expect((await coloursOf(ui)).has(MAUVE)).toBe(true)
+  await ui.unmount()
+
+  // a start with the look off sets nothing and clears nothing: the theme on screen may be another mod's
+  await $.session.start(DESKTOP_START)
+  await clock.settle()
+  expect(theme.sets.length).toBe(1)
+  expect(theme.clears).toBe(1)
+})
+
+test('a look changed in another session is followed at the next heartbeat', async ($, on) => {
+  const { store, theme } = engine(on, [], { fresh: true, surfaces: ['desktop'] })
+  const clock = mock.clock(on, { now: 1_000_000 })
+  await $.session.start(DESKTOP_START)
+  await clock.settle()
+  expect(theme.sets.length).toBe(1)
+  store.look = { palette: 'midnight', scene: 'pixel-night' }
+  await clock.advance(31_000)
+  expect(theme.sets.length).toBe(2)
+  expect(theme.sets[1]?.backdrop).toEqual({ scene: 'pixel-night' })
+  // turned off over there: the theme this session set is its own to clear
+  store.look = { palette: 'off', scene: 'pixel-night' }
+  await clock.advance(31_000)
+  expect(theme.clears).toBe(1)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect((await coloursOf(ui)).has(MAUVE)).toBe(true)
+  await ui.unmount()
+})
+
+test('a terminal is told once where its colours come from', async ($, on) => {
+  const { toasts } = engine(on, [], { fresh: true })
+  const clock = mock.clock(on, { now: 1_000_000 })
+  await $.session.start(TERMINAL_START)
+  await $.session.start(TERMINAL_START)
+  await clock.settle()
+  expect(toasts.length).toBe(1)
+  expect(toasts[0]).toContain('NightPub · 墨与纸')
+})
+
+test("a terminal's spinner keeps its word behind a run of the background's glyphs", async ($, on) => {
+  const { store } = engine(on, [], { fresh: true })
+  const clock = mock.clock(on, { now: 1_000_000 })
+  await $.session.start(TERMINAL_START)
+  await clock.settle()
+  const shown = async (surface: 'terminal' | 'desktop' | 'vscode' = 'terminal', message: string | null = null) => {
+    const ui = await $.ui.mount({ ...SPINNER, surface, props: { ...SPINNER.props, message } })
+    const text = (await ui.find({ type: 'Text' }))?.text
+    await ui.unmount()
+    return text
+  }
+  // an app's row is a sentence, and is left as it is
+  expect(await shown('desktop')).toBe('Working')
+  expect(await shown('vscode')).toBe('Working')
+  expect(await shown()).toMatch(/^[·:\-=+*#%@]{6} Working$/)
+  expect(await shown('terminal', 'Compacting')).toMatch(/^[·:\-=+*#%@]{6} Compacting$/)
+
+  // the glyphs run while the main loop's turn does
+  const still = await shown()
+  await $.turn.start({ text: 'go', turnId: 't1' })
+  await clock.advance(600)
+  expect(await shown()).not.toBe(still)
+  await $.turn.complete(complete('t1'))
+  await clock.advance(2_000)
+  const rested = await shown()
+  await clock.advance(2_000)
+  expect(await shown()).toBe(rested)
+
+  // the pixel night runs blocks; no background, or the wave's own switch off, and the word stands alone
+  const pane = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await pane.press({ key: 'open-settings' })
+  await pane.redraw()
+  await pane.press({ key: 'set-scene' })
+  await clock.settle()
+  expect(await shown()).toMatch(/^[░▒▓█]{6} Working$/)
+  await pane.press({ key: 'set-spinnerWave' })
+  await clock.settle()
+  expect(await shown()).toBe('Working')
+  expect(store['settings.terminal']).toEqual({ spinnerWave: false })
+  await pane.press({ key: 'set-spinnerWave' })
+  await pane.redraw()
+  await pane.press({ key: 'set-scene' })
+  await clock.settle()
+  await pane.redraw()
+  expect((await pane.find({ key: 'set-scene' }))?.props.label).toBe('none')
+  expect((await pane.find({ key: 'set-spinnerWave' }))?.props.dimColor).toBe(true)
+  expect(await shown()).toBe('Working')
+  await pane.unmount()
+})
+
+test('the band and the context bar wear the palette too', async ($, on) => {
+  engine(on, [], { fresh: true, surfaces: ['desktop'] })
+  const clock = mock.clock(on, { now: 1_000_000 })
+  await $.session.start(DESKTOP_START)
+  await clock.settle()
+  await $.turn.start({ text: 'go', turnId: 't1' })
+  await clock.advance(240)
+  const band = await $.ui.mount({ ...WORKING_BAND, surface: 'desktop' })
+  const colours = await coloursOf(band)
+  expect(colours.has(INK.accent)).toBe(true)
+  for (const mocha of [MAUVE, BLUE, TEAL, '#fab387', '#1e1e2e']) expect(colours.has(mocha)).toBe(false)
+  await band.unmount()
 })

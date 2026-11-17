@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { DEFAULT_LOOK, LOOKS, LOOK_IDS, toChoice } from '../hooks/looks'
+import { DEFAULT_LOOK, PALETTE_CHOICES, SCENE_CHOICES, isSameLook, sceneIn, toLook } from '../hooks/look'
 import { PALETTES, PALETTE_IDS, desktopColors } from '../hooks/palettes'
 
 test('Desktop paints every palette', async () => {
@@ -20,14 +20,27 @@ test('Desktop gets muted text brighter than NightPub ships it', async () => {
   }
 })
 
-test('every look goes by its own id, and a stray choice falls back to the default', async () => {
-  for (const id of LOOK_IDS) {
-    // A look is found by its own id: two looks may wear one palette.
-    expect(LOOKS[id].id).toBe(id)
-    expect(Object.values(PALETTES)).toContain(LOOKS[id].palette)
-    expect(toChoice(id)).toBe(id)
+test('a new install wears ink and paper over the glyph sea', async () => {
+  expect(DEFAULT_LOOK).toEqual({ palette: 'ink', scene: 'glyph-sea' })
+  expect(toLook(undefined)).toEqual(DEFAULT_LOOK)
+})
+
+test('a stored look is read field by field, and a stray value is the default', async () => {
+  for (const palette of PALETTE_CHOICES) {
+    for (const scene of SCENE_CHOICES) {
+      expect(toLook({ palette, scene })).toEqual({ palette, scene })
+    }
   }
-  expect(toChoice('off')).toBe('off')
-  expect(toChoice(undefined)).toBe(DEFAULT_LOOK)
-  expect(toChoice('win98')).toBe(DEFAULT_LOOK)
+  // what an earlier version or another hand may have left there
+  expect(toLook('ink')).toEqual(DEFAULT_LOOK)
+  expect(toLook({ palette: 'win98', scene: 'none' })).toEqual({ palette: 'ink', scene: 'none' })
+  expect(toLook({ palette: 'off', scene: 'lagoon' })).toEqual({ palette: 'off', scene: 'glyph-sea' })
+  expect(isSameLook(toLook({ palette: 'off' }), { palette: 'off', scene: 'glyph-sea' })).toBe(true)
+})
+
+test('a look draws a scene only while its palette is on', async () => {
+  expect(sceneIn({ palette: 'tavern', scene: 'pixel-night' })).toBe('pixel-night')
+  expect(sceneIn({ palette: 'tavern', scene: 'none' })).toBeUndefined()
+  // the scene is kept for when the palette comes back
+  expect(sceneIn({ palette: 'off', scene: 'pixel-night' })).toBeUndefined()
 })

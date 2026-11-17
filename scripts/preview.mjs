@@ -1,4 +1,4 @@
-// Builds a page that shows each look's scene the way the desktop app would:
+// Builds a page that shows each scene in each palette the way the desktop app would:
 // through the same sanitizer, inside the same sandboxed frame.
 //
 //   node scripts/preview.mjs <out folder>
@@ -28,57 +28,28 @@ registerHooks({
   },
 })
 
-const { GLYPHS, buildGlyphSea, trace } = await import('../hooks/scenes/glyph-sea.ts')
+const { GLYPHS, trace } = await import('../hooks/scenes/glyph-sea.ts')
 const { PALETTES, PALETTE_IDS } = await import('../hooks/palettes.ts')
+const { SCENES } = await import('../hooks/backdrop.ts')
+const { SCENE_IDS } = await import('../hooks/look.ts')
 const { sceneProblems } = await import('../tests/scene-rules.ts')
 
 const out = resolve(process.argv[2] ?? 'preview')
 mkdirSync(out, { recursive: true })
 
-const { buildPixelNight } = await import('../hooks/scenes/pixel-night.ts')
-
-// Each scene from a palette; `quick` is the same scene with its event every
-// few seconds, to watch one without waiting.
-const SCENES = [
-  {
-    id: 'glyph-sea',
-    label: '字符海',
-    build: (palette, quick) =>
-      buildGlyphSea({
-        ink: palette.textPrimary,
-        accent: palette.accent,
-        ground: palette.canvas,
-        ...(quick ? { ripple: { first: 1, every: 7 } } : {}),
-      }),
-  },
-  {
-    id: 'pixel-night',
-    label: '像素夜景',
-    build: (palette, quick) =>
-      buildPixelNight({
-        ground: palette.canvas,
-        star: palette.textPrimary,
-        town: palette.raised,
-        tavern: palette.overlay,
-        light: palette.warning,
-        sign: palette.accent,
-        dark: palette.sunken,
-        smoke: palette.textSecondary,
-        ...(quick ? { event: { first: 1, every: 9 } } : {}),
-      }),
-  },
-]
-
-const looks = SCENES.flatMap(item =>
+// Every scene in every palette, as the plugin builds them; `quick` is the
+// same scene with its event every few seconds, to watch one without waiting.
+const looks = SCENE_IDS.flatMap(sceneId =>
   PALETTE_IDS.map(id => {
+    const item = SCENES[sceneId]
     const palette = PALETTES[id]
     const scene = item.build(palette, false)
     const quick = item.build(palette, true)
     const problems = sceneProblems(scene)
-    writeFileSync(join(out, `scene-${item.id}-${id}.svg`), scene)
-    console.log(`${item.id} ${id}: ${scene.length} characters${problems.length === 0 ? '' : `\n  ${problems.join('\n  ')}`}`)
+    writeFileSync(join(out, `scene-${sceneId}-${id}.svg`), scene)
+    console.log(`${sceneId} ${id}: ${scene.length} characters${problems.length === 0 ? '' : `\n  ${problems.join('\n  ')}`}`)
 
-    return { id: `${item.id}-${id}`, label: `${item.label} · ${palette.label}`, palette, scene, quick, problems }
+    return { id: `${sceneId}-${id}`, label: `${item.label} · ${palette.label}`, palette, scene, quick, problems }
   }),
 )
 
@@ -93,7 +64,7 @@ const sheet =
 const page = `<!doctype html>
 <html lang="en">
 <meta charset="utf-8">
-<title>nightpub-looks preview</title>
+<title>nightpub scenes preview</title>
 <style>
   html, body { margin: 0; height: 100%; font: 14px/1.6 system-ui, sans-serif; color: var(--text); background: var(--canvas); }
   #backdrop { position: fixed; inset: 0; width: 100%; height: 100%; border: 0; pointer-events: none; }

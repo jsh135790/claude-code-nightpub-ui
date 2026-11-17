@@ -33,11 +33,19 @@ import type {
   UsageSnapshot,
   WorkState,
 } from '../types'
+import { SCENES, sceneOf } from './backdrop'
+import { DEFAULT_LOOK, PALETTE_CHOICES, SCENE_CHOICES, isSameLook, sceneIn, toLook } from './look'
+import type { LookChoice, PaletteChoice, SceneChoice } from './look'
+import { PALETTES, desktopColors } from './palettes'
+import type { Palette } from './palettes'
+import { wave } from './spinner'
 
 const PANE_ID = 'capsule-panel'
 const PANE_TITLE = 'Usage'
 const PANE_COLUMNS = 46
 const TICK_MS = 120
+// the spinner's wave was paced for a frame every 150 ms
+const WAVE_PACE = TICK_MS / 150
 const TWEEN_MS = 600
 const HEARTBEAT_MS = 30_000
 const GIT_DEBOUNCE_MS = 1_500
@@ -322,6 +330,7 @@ const totalsAtom = atom({ plugin: 'capsule-panel', key: 'totals' } as const, EMP
 const settingsAtom = atom({ plugin: 'capsule-panel', key: 'settings' } as const, {})
 const paneViewAtom = atom({ plugin: 'capsule-panel', key: 'paneView' } as const, 'dash')
 const settingsPageAtom = atom({ plugin: 'capsule-panel', key: 'settingsPage' } as const, 'look')
+const lookAtom = atom({ plugin: 'capsule-panel', key: 'look' } as const, DEFAULT_LOOK)
 const modelInfoAtom = atom({ plugin: 'capsule-panel', key: 'modelInfo' } as const, {})
 const versionsAtom = atom({ plugin: 'capsule-panel', key: 'versions' } as const, {})
 const cacheAtom = atom({ plugin: 'capsule-panel', key: 'cacheClock' } as const, FRESH_CACHE)
@@ -761,6 +770,92 @@ const warnOnBurn = async (
     await update($, warningsAtom, w => ({ ...w, [l.kind]: window }))
   }
 }
+
+// ── the look ──────────────────────────────────────────────────────────────
+
+// One look for every surface and session, kept in the store under `look`.
+const LOOK_KEY = 'look'
+const HINT_KEY = 'terminal-hint'
+// Whether this process has set a theme: only a theme of its own is its to clear.
+let hasTheme = false
+
+/** The look in the session's state. Read while drawing, it redraws the drawing when the look changes. */
+const lookNow = async ($: EngineInterface): Promise<LookChoice> => toLook(await read($, lookAtom))
+
+/** Reads the look from the store into the session's state. */
+const loadLook = async ($: EngineInterface): Promise<LookChoice> => {
+  let raw: unknown
+  try {
+    raw = await $.store.get(LOOK_KEY)
+  } catch {
+    raw = undefined
+  }
+  const look = toLook(raw)
+  await update($, lookAtom, () => look)
+  return look
+}
+
+/**
+ * Puts a look on screen: its palette as the session's theme, its scene behind
+ * the conversation. A palette that is off sets nothing, and clears nothing:
+ * the theme on screen may be another mod's.
+ */
+const wearLook = async ($: EngineInterface, look: LookChoice): Promise<void> => {
+  if (look.palette === 'off') return
+  const scene = sceneIn(look)
+  try {
+    await $.theme.set({
+      colors: desktopColors(PALETTES[look.palette]).theme,
+      ...(scene === undefined ? {} : { backdrop: { scene } }),
+    })
+    hasTheme = true
+  } catch {
+    // a host that draws no theme: the panel still wears the palette
+  }
+}
+
+/** Takes the theme off the screen: for a look that was just turned off, never at a start. */
+const clearLook = async ($: EngineInterface): Promise<void> => {
+  hasTheme = false
+  try {
+    await $.theme.clear()
+  } catch {
+    // nothing drew it
+  }
+}
+
+/** Changes the look for every surface: in the session, on screen and in the store. */
+const changeLook = async ($: EngineInterface, patch: Partial<LookChoice>): Promise<void> => {
+  const before = await lookNow($)
+  const look = toLook({ ...before, ...patch })
+  if (isSameLook(before, look)) return
+  await update($, lookAtom, () => look)
+  if (look.palette === 'off') await clearLook($)
+  else await wearLook($, look)
+  try {
+    await $.store.set(LOOK_KEY, look)
+  } catch {
+    // kept for this session
+  }
+}
+
+/** Another session may have changed the look: follow what the store says now. */
+const followLook = async ($: EngineInterface): Promise<void> => {
+  let raw: unknown
+  try {
+    raw = await $.store.get(LOOK_KEY)
+  } catch {
+    return
+  }
+  const stored = toLook(raw)
+  if (isSameLook(stored, await lookNow($))) return
+  await update($, lookAtom, () => stored)
+  if (stored.palette !== 'off') await wearLook($, stored)
+  else if (hasTheme) await clearLook($)
+}
+
+/** The terminal theme that goes with a palette, as `/theme` lists it. */
+const terminalTheme = (palette: Exclude<PaletteChoice, 'off'>): string => `NightPub · ${PALETTES[palette].label}`
 
 // ── settings, cache, spend, notifications, files ──────────────────────────
 
@@ -1241,16 +1336,66 @@ const spinnerSvg = (ink: string): string =>
   `</svg>`
 
 /** A palette's paint. Made once a palette: the spinner's frame restarts if its text changes. */
-const paintOf = (c: PanelColors): Paint => ({
+const paintOf = (c: PanelColors, slices: Record<string, string> = sliceColors(c)): Paint => ({
   c,
   spark: SPARK.map((_, i) => mix(c.teal, c.mauve, i / (SPARK.length - 1))),
   breath: BREATH_STEPS.map(t => mix(c.teal, c.surface2, t)),
   redBreath: BREATH_STEPS.map(t => mix(c.red, c.surface2, t * 0.6)),
-  slices: sliceColors(c),
+  slices,
   spinnerSvg: spinnerSvg(c.base),
 })
 
 const MOCHA_PAINT = paintOf(MOCHA)
+
+// The panel in a NightPub palette, fewer hues than Catppuccin gave it: the
+// accent for every label and figure, info for what is live, and the three
+// states. On the left, the names the panel's code calls its colours by.
+const nightpubColors = (p: Palette): PanelColors => ({
+  base: p.canvas,
+  surface1: p.borderStrong,
+  surface2: mix(p.borderStrong, p.desktop.textMuted, 0.5),
+  overlay0: p.desktop.textMuted,
+  subtext: p.textSecondary,
+  text: p.textPrimary,
+  lavender: p.accent,
+  mauve: p.accent,
+  pink: p.accent,
+  blue: p.accent,
+  sapphire: p.accent,
+  peach: p.accent,
+  teal: p.info,
+  green: p.success,
+  yellow: p.warning,
+  red: p.danger,
+})
+
+// The context bar's slices in a NightPub palette: the accent and info by
+// turns, so two neighbours never match, each pair fainter than the one before.
+const nightpubSlices = (p: Palette): Record<string, string> => {
+  const shade = (hue: string, share: number): string => mix(p.canvas, hue, share)
+  return {
+    sys: shade(p.accent, 1),
+    tools: shade(p.info, 1),
+    mcp: shade(p.accent, 0.72),
+    memory: shade(p.info, 0.72),
+    agents: shade(p.accent, 0.5),
+    skills: shade(p.info, 0.5),
+    cmds: shade(p.accent, 0.86),
+    msgs: shade(p.info, 0.86),
+  }
+}
+
+const paints = new Map<PaletteChoice, Paint>([['off', MOCHA_PAINT]])
+
+/** What a palette paints the panel with: Catppuccin while it is off. Made once a palette. */
+const paintFor = (choice: PaletteChoice): Paint => {
+  const known = paints.get(choice)
+  if (known !== undefined) return known
+  const palette = choice === 'off' ? undefined : PALETTES[choice]
+  const paint = palette === undefined ? MOCHA_PAINT : paintOf(nightpubColors(palette), nightpubSlices(palette))
+  paints.set(choice, paint)
+  return paint
+}
 
 /**
  * A capsule label: Nerd Font half-circle caps in the terminal, an SVG capsule
@@ -1569,7 +1714,15 @@ const pressCompact = async ($: EngineInterface): Promise<void> => {
 
 // ── settings page ─────────────────────────────────────────────────────────
 
-type SettingRow = { id: string; label: string; value: string; isOn: boolean; patch: Partial<PanelSettings> }
+/** A row of the settings page. Pressed, it changes this surface's settings (`patch`) or the look every surface shares (`look`). */
+type SettingRow = {
+  id: string
+  label: string
+  value: string
+  isOn: boolean
+  patch?: Partial<PanelSettings>
+  look?: Partial<LookChoice>
+}
 
 /** The settings that are a plain switch. */
 type Flag = { [K in keyof PanelSettings]-?: PanelSettings[K] extends boolean ? K : never }[keyof PanelSettings]
@@ -1594,20 +1747,54 @@ const countRow = (s: PanelSettings, id: 'recentCalls' | 'changedFiles', label: s
   patch: { [id]: nextOf<number>(LIST_COUNTS, s[id]) },
 })
 
-/** The Look page: what this surface alone draws with. */
-const lookRows = (surface: string, s: PanelSettings): SettingRow[] =>
-  surface !== 'terminal'
-    ? []
-    : [
-        {
-          id: 'icons',
-          label: 'Icons',
-          value: s.icons,
-          isOn: true,
-          patch: { icons: s.icons === 'nerd' ? 'unicode' : 'nerd' },
-        },
-        flagRow(s, 'spinnerWave', 'Spinner wave'),
-      ]
+const sceneName = (scene: SceneChoice): string => (scene === 'none' ? 'none' : SCENES[scene].label)
+
+/** The Look page: the palette and the background every surface shares, then what this surface alone draws with. */
+const lookRows = (surface: string, s: PanelSettings, chosen: LookChoice): SettingRow[] => {
+  const isWorn = chosen.palette !== 'off'
+  const rows: SettingRow[] = [
+    {
+      id: 'palette',
+      label: 'Palette',
+      value: chosen.palette,
+      isOn: isWorn,
+      look: { palette: nextOf(PALETTE_CHOICES, chosen.palette) },
+    },
+    {
+      id: 'scene',
+      label: 'Background',
+      value: sceneName(chosen.scene),
+      // a background is drawn in a palette: with none on, it waits
+      isOn: isWorn && chosen.scene !== 'none',
+      look: { scene: nextOf(SCENE_CHOICES, chosen.scene) },
+    },
+  ]
+  if (surface === 'terminal') {
+    rows.push(
+      {
+        id: 'icons',
+        label: 'Icons',
+        value: s.icons,
+        isOn: true,
+        patch: { icons: s.icons === 'nerd' ? 'unicode' : 'nerd' },
+      },
+      // the wave runs the background's glyphs: no background, no wave
+      flagRow(s, 'spinnerWave', 'Spinner wave', sceneIn(chosen) !== undefined),
+    )
+  }
+  return rows
+}
+
+/** What the Look page says under its rows. */
+const lookNotes = (surface: string, chosen: LookChoice): string[] => {
+  const notes = ['Palette and background are the same on every surface.']
+  if (surface !== 'terminal') return notes
+  notes.push('Icons and the spinner wave apply to the terminal only.')
+  if (chosen.palette !== 'off') {
+    notes.push(`A terminal takes its colours from /theme: pick "${terminalTheme(chosen.palette)}" there.`)
+  }
+  return notes
+}
 
 /** The Panel page: every section's switch, the details of each under it. */
 const panelRows = (s: PanelSettings, cache: CacheClock): SettingRow[] => [
@@ -1673,9 +1860,11 @@ const settingsPage = (
   s: PanelSettings,
   cache: CacheClock,
   page: SettingsPage,
+  chosen: LookChoice,
 ) => {
   const C = look.c
-  const rows = page === 'look' ? lookRows(surface, s) : page === 'panel' ? panelRows(s, cache) : alertRows(s)
+  const rows = page === 'look' ? lookRows(surface, s, chosen) : page === 'panel' ? panelRows(s, cache) : alertRows(s)
+  const notes = page === 'look' ? lookNotes(surface, chosen) : [`These apply to ${surfaceName(surface)} only.`]
   return (
     <ui.Box flexDirection="column" paddingX={1}>
       <ui.Box flexDirection="row" justifyContent="space-between" alignItems="center">
@@ -1707,14 +1896,16 @@ const settingsPage = (
             plain
             dimColor={!r.isOn}
             label={r.value}
-            onPress={() => changeSettings($, surface, r.patch)}
+            onPress={() => (r.look !== undefined ? changeLook($, r.look) : changeSettings($, surface, r.patch ?? {}))}
           />
         </ui.Box>
       ))}
       {gap(ui)}
-      <ui.Text color={C.overlay0} size="footnote">
-        {`These apply to ${surfaceName(surface)} only.`}
-      </ui.Text>
+      {notes.map(note => (
+        <ui.Text color={C.overlay0} size="footnote">
+          {note}
+        </ui.Text>
+      ))}
     </ui.Box>
   )
 }
@@ -1727,6 +1918,21 @@ export const register: Register = on => {
       await $.command.register({ name: 'panel', description: 'Toggle the usage panel', immediate: true })
     } catch (error) {
       $.ui.toast(`capsule-panel: /panel failed to register ${String(error)}`)
+    }
+
+    // The look before anything draws in it. A look that is off stays off:
+    // nothing is cleared here, since the theme on screen may be another mod's.
+    try {
+      const chosen = await loadLook($)
+      await wearLook($, chosen)
+      if (chosen.palette !== 'off' && e.surface === 'terminal' && e.isInteractive && (await $.store.get(HINT_KEY)) !== true) {
+        $.ui.toast(`A terminal takes its colours from /theme: pick "${terminalTheme(chosen.palette)}" there.`, {
+          timeoutMs: 15_000,
+        })
+        await $.store.set(HINT_KEY, true)
+      }
+    } catch {
+      // the panel's own colours, and no theme
     }
 
     void (async () => {
@@ -1789,6 +1995,7 @@ export const register: Register = on => {
         if (now - lastSpendRefresh >= SPEND_REFRESH_MS || localDay(now) !== localDay(lastSpendRefresh)) {
           await refreshSpend($, false)
         }
+        await followLook($)
       })()
     })
 
@@ -2079,11 +2286,12 @@ export const register: Register = on => {
     const ui: Ui = $.ui.resolve(e)
     const { Box, Text, Button } = ui
     const settings = settingsFor(await read($, settingsAtom), e.surface)
-    const look = lookFor(e.surface, iconChoice(e.surface, settings), MOCHA_PAINT)
+    const chosen = await lookNow($)
+    const look = lookFor(e.surface, iconChoice(e.surface, settings), paintFor(chosen.palette))
     const { icons, paint } = look
     const C = look.c
     if ((await read($, paneViewAtom)) === 'settings') {
-      return settingsPage($, ui, look, e.surface, settings, await read($, cacheAtom), await read($, settingsPageAtom))
+      return settingsPage($, ui, look, e.surface, settings, await read($, cacheAtom), await read($, settingsPageAtom), chosen)
     }
     const [snapshot, totals, breakdown, samples, activity, stream, agents, todos, git, work, frame, now] =
       await Promise.all([
@@ -2475,7 +2683,7 @@ export const register: Register = on => {
 
     const ui: Ui = $.ui.resolve(e)
     const { Box, Text } = ui
-    const look = lookFor(e.surface, iconChoice(e.surface, settings), MOCHA_PAINT)
+    const look = lookFor(e.surface, iconChoice(e.surface, settings), paintFor((await lookNow($)).palette))
     const { icons } = look
     const C = look.c
     const [activity, frame, work, stream, agents] = await Promise.all([
@@ -2517,5 +2725,33 @@ export const register: Register = on => {
         </Box>
       </Box>
     )
+  })
+
+  on('ui.render', { component: 'Backdrop' }, async ($, e, next) => {
+    // Every mod's hook is asked for every scene: this one draws its own alone.
+    if (e.props.plugin !== $.plugin.name || (e.surface !== 'desktop' && e.surface !== 'mobile')) return next(e)
+    const chosen = await lookNow($)
+    const scene = sceneIn(chosen)
+    if (chosen.palette === 'off' || scene === undefined || scene !== e.props.scene) return next(e)
+    const ui: Ui = $.ui.resolve(e)
+    const Svg = ui.Svg
+    if (Svg === undefined) return next(e)
+    const drawn = sceneOf(scene, PALETTES[chosen.palette])
+    return <Svg source={drawn.source} alt={drawn.alt} isInteractive />
+  })
+
+  // The wave is the terminal's alone: its spinner line is an ornament that
+  // already moves, where the desktop's row is a sentence saying what a step does.
+  on('ui.render', { component: 'Spinner' }, async ($, e, next) => {
+    if (e.surface !== 'terminal') return next(e)
+    const scene = sceneIn(await lookNow($))
+    if (scene === undefined) return next(e)
+    if (!settingsFor(await read($, settingsAtom), 'terminal').spinnerWave) return next(e)
+    // The frame counts up while the main loop's turn runs, and stops with it.
+    // The engine's own word, time and tokens stay; the glyphs run before them.
+    const frame = await read($, frameAtom)
+    const run = wave(SCENES[scene].ramp, Math.floor(frame.n * WAVE_PACE))
+    if (e.props.message !== null) return next({ ...e, props: { ...e.props, message: `${run} ${e.props.message}` } })
+    return next({ ...e, props: { ...e.props, word: `${run} ${e.props.word}` } })
   })
 }

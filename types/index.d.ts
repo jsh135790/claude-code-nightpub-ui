@@ -78,6 +78,16 @@ export type PanelSettings = {
   spinnerWave: boolean
 }
 
+/**
+ * The look chosen on the settings page, one for every surface: a NightPub
+ * palette, or `off` for the panel's own colours and no theme, and the scene
+ * behind the conversation, or `none`.
+ */
+export type LookChoice = {
+  palette: 'ink' | 'tavern' | 'midnight' | 'off'
+  scene: 'glyph-sea' | 'pixel-night' | 'none'
+}
+
 export type PaneView = 'dash' | 'settings'
 
 /** The settings page's own pages. */
@@ -152,6 +162,8 @@ declare module 'claude-code' {
       isPaneDismissed: boolean
       /** Per surface (`terminal`, `desktop`), mirrored from the store. */
       settings: Record<string, PanelSettings>
+      /** Mirrored from the store, where every session and surface shares it. */
+      look: LookChoice
       paneView: PaneView
       settingsPage: SettingsPage
       modelInfo: ModelInfo
