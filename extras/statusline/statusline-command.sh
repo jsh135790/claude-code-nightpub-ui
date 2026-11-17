@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # =============================================================================
-# Claude Code Status Line — Catppuccin Mocha capsules with Nerd Font icons
+# Claude Code Status Line — capsules with Nerd Font icons
 #    model · effort    dir    git    ctx%    cost    vim
-# One jq call and one git call per draw; usage detail lives in the
-# capsule-panel plugin. Respects NO_COLOR.
+# Catppuccin Mocha by itself; with the nightpub-ui plugin, the NightPub
+# palette chosen on its Look page. One jq call and one git call per draw;
+# usage detail lives in the plugin's panel. Respects NO_COLOR.
 # =============================================================================
 
 set -u
@@ -112,16 +113,55 @@ if [[ -n "${NO_COLOR:-}" ]]; then
 fi
 
 E=$'\033'
-INK="30;30;46"          # base — text on every capsule
+# Catppuccin Mocha: every capsule its own colour, one ink on all of them
+INK="30;30;46"          # base — text on a capsule
 DIM_INK="69;71;90"      # surface1 — secondary text on a capsule
-MAUVE="203;166;247" BLUE="137;180;250" GREEN="166;227;161" YELLOW="249;226;175"
-RED="243;139;168" PEACH="250;179;135" LAVENDER="180;190;254"
+PLAIN_INK=$INK          # text on the directory and cost capsules
+C_MODEL="203;166;247" C_DIR="137;180;250" C_GIT="166;227;161" C_COST="250;179;135" C_VIM="180;190;254"
+C_OK="166;227;161" C_WARN="249;226;175" C_BAD="243;139;168"
+
+# The palette chosen in the nightpub-ui plugin, which leaves it as one line in
+# <config>/nightpub-ui/palette:
+#     nightpub-ui/1 <id> <nine R;G;B colours> end
+# the colours being: text on a capsule, secondary text, accent, plain capsule,
+# text on a plain capsule, success, warning, danger, info. A line that reads
+# any other way (`nightpub-ui/1 off end` among them), or no file, keeps the
+# colours above. The line is only ever read as text, never run.
+PALETTE_FILE=""
+if [[ -n "${CLAUDE_CONFIG_DIR:-}" ]]; then
+  PALETTE_FILE="$CLAUDE_CONFIG_DIR/nightpub-ui/palette"
+else
+  for _home in "${HOME:-}" "${USERPROFILE:-}"; do
+    if [[ -n "$_home" && -r "$_home/.claude/nightpub-ui/palette" ]]; then
+      PALETTE_FILE="$_home/.claude/nightpub-ui/palette"
+      break
+    fi
+  done
+fi
+if [[ -n "$PALETTE_FILE" && -r "$PALETTE_FILE" ]]; then
+  PALETTE_LINE=""
+  IFS= read -r PALETTE_LINE <"$PALETTE_FILE" || true
+  read -r -a P <<<"${PALETTE_LINE%$'\r'}"
+  if [[ ${#P[@]} -eq 12 && "${P[0]}" == "nightpub-ui/1" && "${P[11]}" == "end" ]]; then
+    RGB='^[0-9]{1,3};[0-9]{1,3};[0-9]{1,3}$'
+    is_palette=1
+    for _at in 2 3 4 5 6 7 8 9 10; do
+      [[ "${P[_at]}" =~ $RGB ]] || is_palette=0
+    done
+    if (( is_palette )); then
+      # fewer hues: the accent for the model, plain capsules for the directory and the cost
+      INK=${P[2]} DIM_INK=${P[3]} C_MODEL=${P[4]}
+      C_DIR=${P[5]} C_COST=${P[5]} PLAIN_INK=${P[6]}
+      C_GIT=${P[7]} C_OK=${P[7]} C_WARN=${P[8]} C_BAD=${P[9]} C_VIM=${P[10]}
+    fi
+  fi
+fi
 
 OUT=""
-# pill <bg rgb> <icon> <bold text> [secondary text]
+# pill <bg rgb> <ink rgb> <icon> <bold text> [secondary text]
 pill() {
-  OUT+="${OUT:+ }${E}[38;2;${1}m${CAP_L}${E}[48;2;${1}m${E}[38;2;${INK}m${2} ${E}[1m${3}${E}[22m"
-  [[ -n "${4:-}" ]] && OUT+="${E}[38;2;${DIM_INK}m ${4}"
+  OUT+="${OUT:+ }${E}[38;2;${1}m${CAP_L}${E}[48;2;${1}m${E}[38;2;${2}m${3} ${E}[1m${4}${E}[22m"
+  [[ -n "${5:-}" ]] && OUT+="${E}[38;2;${DIM_INK}m ${5}"
   OUT+="${E}[0m${E}[38;2;${1}m${CAP_R}${E}[0m"
 }
 
@@ -129,10 +169,10 @@ if [[ -n "$MODEL" ]]; then
   extra=""
   [[ -n "$EFFORT" ]] && extra="· $EFFORT"
   [[ "$THINKING" == "true" ]] && extra+="${extra:+ }$I_THINK"
-  pill "$MAUVE" "$I_MODEL" "$MODEL" "$extra"
+  pill "$C_MODEL" "$INK" "$I_MODEL" "$MODEL" "$extra"
 fi
 
-[[ -n "$DIR" ]] && pill "$BLUE" "$I_DIR" "$DIR"
+[[ -n "$DIR" ]] && pill "$C_DIR" "$PLAIN_INK" "$I_DIR" "$DIR"
 
 if [[ -n "$BRANCH" ]]; then
   extra=""
@@ -140,18 +180,18 @@ if [[ -n "$BRANCH" ]]; then
   (( AHEAD > 0 )) && extra+="${extra:+ }↑$AHEAD"
   (( BEHIND > 0 )) && extra+="${extra:+ }↓$BEHIND"
   [[ -n "$PR_NUM" ]] && extra+="${extra:+ }$I_PR $PR_NUM"
-  pill "$GREEN" "$I_GIT" "$BRANCH" "$extra"
+  pill "$C_GIT" "$INK" "$I_GIT" "$BRANCH" "$extra"
 fi
 
 if [[ -n "$CTX_INT" ]]; then
-  ctx_bg=$GREEN
-  (( CTX_INT >= 50 )) && ctx_bg=$YELLOW
-  (( CTX_INT >= 80 )) && ctx_bg=$RED
-  pill "$ctx_bg" "$I_CTX" "$CTX_INT%"
+  ctx_bg=$C_OK
+  (( CTX_INT >= 50 )) && ctx_bg=$C_WARN
+  (( CTX_INT >= 80 )) && ctx_bg=$C_BAD
+  pill "$ctx_bg" "$INK" "$I_CTX" "$CTX_INT%"
 fi
 
-[[ -n "$COST_FMT" ]] && pill "$PEACH" "$I_COST" "$COST_FMT"
-[[ -n "$VIM" ]] && pill "$LAVENDER" "$I_VIM" "$VIM"
+[[ -n "$COST_FMT" ]] && pill "$C_COST" "$PLAIN_INK" "$I_COST" "$COST_FMT"
+[[ -n "$VIM" ]] && pill "$C_VIM" "$INK" "$I_VIM" "$VIM"
 
 [[ -n "$OUT" ]] && printf '%s\n' "$OUT"
 exit 0

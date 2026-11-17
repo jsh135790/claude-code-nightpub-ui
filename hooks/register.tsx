@@ -38,6 +38,7 @@ import { DEFAULT_LOOK, PALETTE_CHOICES, SCENE_CHOICES, isSameLook, sceneIn, toLo
 import type { LookChoice, PaletteChoice, SceneChoice } from './look'
 import { PALETTES, desktopColors } from './palettes'
 import type { Palette } from './palettes'
+import { tellStatusline } from './statusline'
 import { wave } from './spinner'
 
 const PANE_ID = 'capsule-panel'
@@ -832,6 +833,7 @@ const changeLook = async ($: EngineInterface, patch: Partial<LookChoice>): Promi
   await update($, lookAtom, () => look)
   if (look.palette === 'off') await clearLook($)
   else await wearLook($, look)
+  if (look.palette !== before.palette) await tellStatusline($, look.palette)
   try {
     await $.store.set(LOOK_KEY, look)
   } catch {
@@ -848,10 +850,12 @@ const followLook = async ($: EngineInterface): Promise<void> => {
     return
   }
   const stored = toLook(raw)
-  if (isSameLook(stored, await lookNow($))) return
+  const before = await lookNow($)
+  if (isSameLook(stored, before)) return
   await update($, lookAtom, () => stored)
   if (stored.palette !== 'off') await wearLook($, stored)
   else if (hasTheme) await clearLook($)
+  if (stored.palette !== before.palette) await tellStatusline($, stored.palette)
 }
 
 /** The terminal theme that goes with a palette, as `/theme` lists it. */
@@ -1925,6 +1929,7 @@ export const register: Register = on => {
     try {
       const chosen = await loadLook($)
       await wearLook($, chosen)
+      await tellStatusline($, chosen.palette)
       if (chosen.palette !== 'off' && e.surface === 'terminal' && e.isInteractive && (await $.store.get(HINT_KEY)) !== true) {
         $.ui.toast(`A terminal takes its colours from /theme: pick "${terminalTheme(chosen.palette)}" there.`, {
           timeoutMs: 15_000,

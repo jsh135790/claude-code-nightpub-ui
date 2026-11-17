@@ -69,6 +69,8 @@ type EngineOptions = {
   /** What the plugin's store holds at the start. */
   store?: Record<string, unknown>
   env?: Record<string, string>
+  /** The files there are at the start, by path. */
+  files?: Record<string, string>
   surfaces?: RenderSurface[]
   /** The auto-compact threshold the context breakdown reports. */
   threshold?: number
@@ -128,6 +130,20 @@ const engine = (on: On, panes: UiPane[] = [], opts: EngineOptions = {}) => {
   on('session.version', () => ({ value: { version: '2.1.317', base: '2.1.317' } }))
   on('agent.list', () => ({ value: [] }))
   on('env.get', ($, e) => ({ value: env[e.name] }))
+  // the files there are, and each path the plugin wrote, in order
+  const files: Record<string, string> = { ...opts.files }
+  const writes: string[] = []
+  // the engine hands over a path in the system's own spelling: kept here with forward slashes
+  const slashed = (path: string) => path.split(String.fromCharCode(92)).join('/')
+  on('fs.read', ($, e) => {
+    const text = files[slashed(e.path)]
+    return text === undefined ? { deny: `ENOENT: ${e.path}` } : { value: text }
+  })
+  on('fs.write', ($, e) => {
+    files[slashed(e.path)] = e.text
+    writes.push(slashed(e.path))
+    return { value: undefined }
+  })
   // what stands in the store where the test put nothing: EVERYTHING, unless fresh
   const seeds: Record<string, unknown> =
     opts.fresh === true ? {} : { 'settings.terminal': EVERYTHING, 'settings.desktop': EVERYTHING, look: NO_LOOK }
@@ -197,7 +213,7 @@ const engine = (on: On, panes: UiPane[] = [], opts: EngineOptions = {}) => {
     return { value: undefined }
   })
   on('ui.render', { component: 'AbovePrompt' }, () => ({ type: 'Box' }))
-  return { closed, toasts, played, runs, notes, compacts, store, steps, session, theme }
+  return { closed, toasts, played, runs, notes, compacts, store, steps, session, theme, files, writes }
 }
 
 /** A call left running: the test ends with it under way, and what its teardown makes of it is nobody's to handle. */
@@ -1530,4 +1546,78 @@ test('the band and the context bar wear the palette too', async ($, on) => {
   expect(colours.has(INK.accent)).toBe(true)
   for (const mocha of [MAUVE, BLUE, TEAL, '#fab387', '#1e1e2e']) expect(colours.has(mocha)).toBe(false)
   await band.unmount()
+})
+
+// ── the status line ───────────────────────────────────────────────────────
+
+const PALETTE_FILE = 'C:/cfg/nightpub-ui/palette'
+const CONFIG = { CLAUDE_CONFIG_DIR: 'C:/cfg' }
+// ink and paper: canvas, strong border, accent, strong border, primary text, success, warning, danger, info
+const INK_LINE =
+  'nightpub-ui/1 ink 18;18;18 58;58;58 163;182;220 58;58;58 233;231;227 128;185;139 216;163;92 226;106;97 125;188;180 end\n'
+
+test('the status line is left the palette in a file, one line it can check', async ($, on) => {
+  const { files, writes } = engine(on, [], { fresh: true, surfaces: ['desktop'], env: CONFIG })
+  const clock = mock.clock(on, { now: 1_000_000 })
+  await $.session.start(DESKTOP_START)
+  await clock.settle()
+  expect(files[PALETTE_FILE]).toBe(INK_LINE)
+  expect(writes).toEqual([PALETTE_FILE])
+
+  // the palette changed on the Look page: the file follows, and a new background writes nothing
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.press({ key: 'open-settings' })
+  await ui.redraw()
+  await ui.press({ key: 'set-palette' })
+  await ui.press({ key: 'set-scene' })
+  await clock.settle()
+  expect(files[PALETTE_FILE]).toMatch(/^nightpub-ui\/1 tavern (\d{1,3};\d{1,3};\d{1,3} ){9}end\n$/)
+  expect(writes.length).toBe(2)
+
+  // midnight, then off: the script goes back to its own colours
+  await ui.press({ key: 'set-palette' })
+  await ui.press({ key: 'set-palette' })
+  await clock.settle()
+  expect(files[PALETTE_FILE]).toBe('nightpub-ui/1 off end\n')
+  await ui.unmount()
+})
+
+test('a palette file that already says so is left alone, and off leaves none where none was', async ($, on) => {
+  // no CLAUDE_CONFIG_DIR: the file is under the home directory's .claude
+  const home = 'C:/Users/me/.claude/nightpub-ui/palette'
+  const { files, writes, store } = engine(on, [], {
+    fresh: true,
+    surfaces: ['desktop'],
+    env: { USERPROFILE: 'C:/Users/me' },
+    files: { [home]: INK_LINE },
+    store: { look: { palette: 'ink', scene: 'none' } },
+  })
+  const clock = mock.clock(on, { now: 1_000_000 })
+  await $.session.start(DESKTOP_START)
+  await clock.settle()
+  expect(writes).toEqual([])
+
+  // changed in another session, and the file gone missing since: this one writes it at its heartbeat
+  delete files[home]
+  store.look = { palette: 'midnight', scene: 'none' }
+  await clock.advance(31_000)
+  expect(files[home]).toMatch(/^nightpub-ui\/1 midnight /)
+  expect(writes).toEqual([home])
+})
+
+test('with the look off and no file, nothing is written', async ($, on) => {
+  const off = engine(on, [], { fresh: true, env: CONFIG, store: { look: { palette: 'off', scene: 'glyph-sea' } } })
+  const clock = mock.clock(on, { now: 1_000_000 })
+  await $.session.start(TERMINAL_START)
+  await clock.settle()
+  expect(off.writes).toEqual([])
+  expect(off.files[PALETTE_FILE]).toBeUndefined()
+})
+
+test('where no configuration directory is known, the palette goes nowhere', async ($, on) => {
+  const { writes } = engine(on, [], { fresh: true })
+  const clock = mock.clock(on, { now: 1_000_000 })
+  await $.session.start(TERMINAL_START)
+  await clock.settle()
+  expect(writes).toEqual([])
 })
