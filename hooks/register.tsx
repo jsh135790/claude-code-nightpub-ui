@@ -76,8 +76,8 @@ const AGENT_TOOLS: ReadonlySet<string> = new Set(['Agent', 'Task'])
 // what tool.call carries beside the tool's own arguments
 const ENVELOPE_KEYS: ReadonlySet<string> = new Set(['tool', 'tool_use_id', 'agentId', 'consent'])
 
-// Catppuccin Mocha
-const C = {
+// Catppuccin Mocha: what the panel wears while no NightPub palette is on.
+const MOCHA = {
   base: '#1e1e2e',
   surface1: '#45475a',
   surface2: '#585b70',
@@ -95,6 +95,21 @@ const C = {
   peach: '#fab387',
   red: '#f38ba8',
 } as const
+
+/** The colours the panel draws with, by the names Catppuccin gives them. */
+type PanelColors = { readonly [K in keyof typeof MOCHA]: string }
+
+/** The colours and the tables made from them, for one palette. */
+type Paint = {
+  c: PanelColors
+  spark: readonly string[]
+  breath: readonly string[]
+  /** A figure at or past HOT_PCT pulses through these while Claude works. */
+  redBreath: readonly string[]
+  slices: Readonly<Record<string, string>>
+  /** The spinner's frame: the same text for as long as the palette stays. */
+  spinnerSvg: string
+}
 
 // ── settings ──────────────────────────────────────────────────────────────
 
@@ -223,16 +238,18 @@ const PIE_NERD = ['\u{f0a9e}', '\u{f0a9f}', '\u{f0aa0}', '\u{f0aa1}', '\u{f0aa2}
 const PIE_UNICODE = ['◐', '◓', '◑', '◒']
 
 /** `isVector`: icons and capsules are drawn as SVG shapes rather than font glyphs. */
-type Look = { icons: IconSet; pie: readonly string[]; isTerminal: boolean; isVector: boolean }
+type Look = { icons: IconSet; pie: readonly string[]; isTerminal: boolean; isVector: boolean; paint: Paint; c: PanelColors }
 
 // the surfaces that draw an `Svg`; the terminal's table only stands one in
 const SVG_SURFACES: ReadonlySet<string> = new Set(['desktop', 'vscode', 'mobile'])
 
 /** Which glyphs a surface gets: Nerd Font in the terminal, vector shapes elsewhere, unless forced. */
-const lookFor = (surface: string, choice: IconChoice): Look => {
+const lookFor = (surface: string, choice: IconChoice, paint: Paint): Look => {
   const isTerminal = surface === 'terminal'
   const isNerd = choice === 'nerd' || (choice === 'auto' && isTerminal)
   return {
+    paint,
+    c: paint.c,
     icons: isNerd ? NERD : UNICODE,
     pie: isNerd ? PIE_NERD : PIE_UNICODE,
     isTerminal,
@@ -259,10 +276,7 @@ const mix = (a: string, b: string, t: number): string => {
   return `#${ch(ar, br)}${ch(ag, bg)}${ch(ab, bb)}`
 }
 
-const SPARK_COLORS = SPARK.map((_, i) => mix(C.teal, C.mauve, i / (SPARK.length - 1)))
-const BREATH = [0, 0.25, 0.5, 0.75, 1, 0.75, 0.5, 0.25].map(t => mix(C.teal, C.surface2, t))
-// a figure at or past HOT_PCT pulses while Claude works
-const RED_BREATH = [0, 0.25, 0.5, 0.75, 1, 0.75, 0.5, 0.25].map(t => mix(C.red, C.surface2, t * 0.6))
+const BREATH_STEPS = [0, 0.25, 0.5, 0.75, 1, 0.75, 0.5, 0.25]
 
 const EMPTY_TOTALS: SessionTotals = {
   input: 0,
@@ -383,11 +397,11 @@ const pctText = (pct: number | undefined): string => (pct === undefined ? '—' 
 
 const clampPct = (pct: number | undefined): number => Math.max(0, Math.min(100, pct ?? 0))
 
-const thresholdColor = (pct: number | undefined): string => {
-  if (pct === undefined) return C.overlay0
-  if (pct >= 80) return C.red
-  if (pct >= 50) return C.yellow
-  return C.green
+const thresholdColor = (c: PanelColors, pct: number | undefined): string => {
+  if (pct === undefined) return c.overlay0
+  if (pct >= 80) return c.red
+  if (pct >= 50) return c.yellow
+  return c.green
 }
 
 const hitRate = (readTokens: number, writeTokens: number, inputTokens: number): number | undefined => {
@@ -470,19 +484,19 @@ const CATEGORY_LABELS: readonly [RegExp, string][] = [
   [/slash|command/i, 'cmds'],
   [/message/i, 'msgs'],
 ]
-const SLICE_COLORS: Record<string, string> = {
-  sys: C.mauve,
-  tools: C.blue,
-  mcp: C.teal,
-  memory: C.peach,
-  agents: C.pink,
-  skills: C.yellow,
-  cmds: C.lavender,
-  msgs: C.green,
-}
+const sliceColors = (c: PanelColors): Record<string, string> => ({
+  sys: c.mauve,
+  tools: c.blue,
+  mcp: c.teal,
+  memory: c.peach,
+  agents: c.pink,
+  skills: c.yellow,
+  cmds: c.lavender,
+  msgs: c.green,
+})
 const shortCategory = (name: string): string =>
   CATEGORY_LABELS.find(([re]) => re.test(name))?.[1] ?? clean(name.toLowerCase().split(' ')[0] ?? name, 8)
-const sliceColor = (label: string): string => SLICE_COLORS[label] ?? C.sapphire
+const sliceColor = (paint: Paint, label: string): string => paint.slices[label] ?? paint.c.sapphire
 
 const ease = (t: number): number => 1 - (1 - t) ** 3
 
@@ -1158,7 +1172,13 @@ const iconShape = (icon: PillIcon, ink: string, bg: string): string => {
  * same padding at both ends, the icon always `PILL_PAD` from the left edge.
  * `isSlotEmpty` leaves the icon out, for the spinner laid over it.
  */
-const pillSvg = (icon: PillIcon, label: string, bg: string, isSlotEmpty: boolean): { source: string; width: number } => {
+const pillSvg = (
+  icon: PillIcon,
+  label: string,
+  bg: string,
+  ink: string,
+  isSlotEmpty: boolean,
+): { source: string; width: number } => {
   const chars = Array.from(label).length
   const textW = Math.round(chars * PILL_ADVANCE * 10) / 10
   const w = Math.ceil(2 * PILL_PAD + ICON_BOX + (chars === 0 ? 0 : ICON_GAP + textW))
@@ -1167,12 +1187,12 @@ const pillSvg = (icon: PillIcon, label: string, bg: string, isSlotEmpty: boolean
   const source =
     `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">` +
     `<rect width="${w}" height="${h}" rx="${h / 2}" fill="${bg}"/>` +
-    (isSlotEmpty ? '' : `<g transform="translate(${PILL_PAD} ${(h - ICON_BOX) / 2})">${iconShape(icon, C.base, bg)}</g>`) +
+    (isSlotEmpty ? '' : `<g transform="translate(${PILL_PAD} ${(h - ICON_BOX) / 2})">${iconShape(icon, ink, bg)}</g>`) +
     (chars === 0
       ? ''
       : `<text x="${textX}" y="${Math.round(PILL_BASELINE * 10) / 10}"` +
         ` font-family="ui-monospace, 'Cascadia Mono', Consolas, Menlo, monospace" font-size="${PILL_FONT}" font-weight="600"` +
-        ` fill="${C.base}" textLength="${textW}" lengthAdjust="spacingAndGlyphs">${escapeXml(label)}</text>`) +
+        ` fill="${ink}" textLength="${textW}" lengthAdjust="spacingAndGlyphs">${escapeXml(label)}</text>`) +
     `</svg>`
   return { source, width: w }
 }
@@ -1183,11 +1203,23 @@ const pillSvg = (icon: PillIcon, label: string, bg: string, isSlotEmpty: boolean
 // surface never adds its own (which it would reread, and could change, per redraw).
 const SPINNER_W = PILL_PAD + ICON_BOX + 1
 const SPINNER_ALT = 'working'
-const SPINNER_SVG =
+const spinnerSvg = (ink: string): string =>
   `<svg xmlns="http://www.w3.org/2000/svg" width="${SPINNER_W}" height="${PILL_H}" viewBox="0 0 ${SPINNER_W} ${PILL_H}"` +
-  ` color="${C.base}" font-family="monospace">` +
-  `<g transform="translate(${PILL_PAD} ${(PILL_H - ICON_BOX) / 2})">${iconShape({ glyph: '', shape: 'spin' }, C.base, 'none')}</g>` +
+  ` color="${ink}" font-family="monospace">` +
+  `<g transform="translate(${PILL_PAD} ${(PILL_H - ICON_BOX) / 2})">${iconShape({ glyph: '', shape: 'spin' }, ink, 'none')}</g>` +
   `</svg>`
+
+/** A palette's paint. Made once a palette: the spinner's frame restarts if its text changes. */
+const paintOf = (c: PanelColors): Paint => ({
+  c,
+  spark: SPARK.map((_, i) => mix(c.teal, c.mauve, i / (SPARK.length - 1))),
+  breath: BREATH_STEPS.map(t => mix(c.teal, c.surface2, t)),
+  redBreath: BREATH_STEPS.map(t => mix(c.red, c.surface2, t * 0.6)),
+  slices: sliceColors(c),
+  spinnerSvg: spinnerSvg(c.base),
+})
+
+const MOCHA_PAINT = paintOf(MOCHA)
 
 /**
  * A capsule label: Nerd Font half-circle caps in the terminal, an SVG capsule
@@ -1197,15 +1229,16 @@ const SPINNER_SVG =
  */
 const pill = (ui: Ui, look: Look, icon: PillIcon, label: string, bg: string) => {
   const Svg = ui.Svg
+  const C = look.c
   if (look.isVector && Svg !== undefined) {
     const isSpinning = icon.shape === 'spin'
-    const { source, width } = pillSvg(icon, label, bg, isSpinning)
+    const { source, width } = pillSvg(icon, label, bg, C.base, isSpinning)
     return (
       <ui.Box flexShrink={0}>
         <Svg source={source} alt={label} width={width} height={PILL_H} isInteractive={false} />
         {isSpinning && (
           <ui.Box position="absolute" top={0} left={0}>
-            <Svg source={SPINNER_SVG} alt={SPINNER_ALT} width={SPINNER_W} height={PILL_H} isInteractive />
+            <Svg source={look.paint.spinnerSvg} alt={SPINNER_ALT} width={SPINNER_W} height={PILL_H} isInteractive />
           </ui.Box>
         )}
       </ui.Box>
@@ -1329,7 +1362,7 @@ const metricRow = (ui: Ui, look: Look, name: IconName, label: string, accent: st
   <ui.Box flexDirection="row" alignItems="center">
     <ui.Box flexDirection="row" alignItems="center" flexShrink={0}>
       {icon(ui, look, name, accent)}
-      <ui.Text color={C.subtext} weight="semibold" wrap="truncate-end">
+      <ui.Text color={look.c.subtext} weight="semibold" wrap="truncate-end">
         {` ${label.padEnd(7)}`}
       </ui.Text>
     </ui.Box>
@@ -1339,22 +1372,24 @@ const metricRow = (ui: Ui, look: Look, name: IconName, label: string, accent: st
 
 const gap = (ui: Ui) => <ui.Text> </ui.Text>
 
-const barCells = (width: number, pct: number | undefined, color: string): Cell[] => {
+const barCells = (c: PanelColors, width: number, pct: number | undefined, color: string): Cell[] => {
   const filled = Math.round((width * clampPct(pct)) / 100)
   return [
     ...Array.from({ length: filled }, () => ({ ch: LINE, color })),
-    ...Array.from({ length: width - filled }, () => ({ ch: LINE, color: C.surface1 })),
+    ...Array.from({ length: width - filled }, () => ({ ch: LINE, color: c.surface1 })),
   ]
 }
 
 const contextCells = (
+  paint: Paint,
   width: number,
   pct: number | undefined,
   breakdown: ContextBreakdown | null,
   windowTokens: number,
   shimmer: number | undefined,
-  fill: string = thresholdColor(pct),
+  fill: string = thresholdColor(paint.c, pct),
 ): Cell[] => {
+  const C = paint.c
   const filled = Math.round((width * clampPct(pct)) / 100)
   const cells: Cell[] = []
   const slices = breakdown?.slices ?? []
@@ -1371,7 +1406,7 @@ const contextCells = (
       rest -= 1
     }
     slices.forEach((s, i) => {
-      for (let k = 0; k < (alloc[i] ?? 0); k++) cells.push({ ch: LINE, color: sliceColor(s.label) })
+      for (let k = 0; k < (alloc[i] ?? 0); k++) cells.push({ ch: LINE, color: sliceColor(paint, s.label) })
     })
   } else {
     for (let k = 0; k < filled; k++) cells.push({ ch: LINE, color: fill })
@@ -1394,16 +1429,16 @@ const contextCells = (
   return cells
 }
 
-const sparkCells = (rates: readonly number[], width: number): Cell[] => {
+const sparkCells = (paint: Paint, rates: readonly number[], width: number): Cell[] => {
   const shown = rates.slice(-width)
   const max = Math.max(1, ...shown)
   return shown.map(r => {
     const level = Math.max(0, Math.min(SPARK.length - 1, Math.round((r / max) * (SPARK.length - 1))))
-    return { ch: SPARK[level] ?? '▁', color: SPARK_COLORS[level] ?? C.teal }
+    return { ch: SPARK[level] ?? '▁', color: paint.spark[level] ?? paint.c.teal }
   })
 }
 
-const statusGlyph = (status: ActivityStatus, n: number, pie: readonly string[]): Cell => {
+const statusGlyph = (C: PanelColors, status: ActivityStatus, n: number, pie: readonly string[]): Cell => {
   if (status === 'running') return { ch: pie[n % pie.length] ?? '•', color: C.peach }
   if (status === 'error') return { ch: '✗', color: C.red }
   return { ch: '✓', color: C.green }
@@ -1413,7 +1448,12 @@ const statusGlyph = (status: ActivityStatus, n: number, pie: readonly string[]):
  * What the band's capsule says for a phase. Waiting on tools, or between
  * steps, it spins; `spin` is that step's spinner.
  */
-const phaseLook = (phase: Phase, icons: IconSet, spin: PillIcon): { icon: PillIcon; label: string; color: string } => {
+const phaseLook = (
+  C: PanelColors,
+  phase: Phase,
+  icons: IconSet,
+  spin: PillIcon,
+): { icon: PillIcon; label: string; color: string } => {
   switch (phase) {
     case 'thinking':
       return { icon: { glyph: icons.brain, shape: 'brain' }, label: 'thinking', color: C.mauve }
@@ -1545,7 +1585,9 @@ const settingRows = (surface: string, s: PanelSettings, cache: CacheClock): Sett
 const surfaceName = (surface: string): string => (surface === 'terminal' ? 'the terminal' : 'Claude Desktop')
 
 /** The settings page that takes the pane's place while it is open: this surface's settings. */
-const settingsPage = ($: EngineInterface, ui: Ui, look: Look, surface: string, s: PanelSettings, cache: CacheClock) => (
+const settingsPage = ($: EngineInterface, ui: Ui, look: Look, surface: string, s: PanelSettings, cache: CacheClock) => {
+  const C = look.c
+  return (
   <ui.Box flexDirection="column" paddingX={1}>
     <ui.Button key="settings-back" plain dimColor label="← back" onPress={() => update($, paneViewAtom, () => 'dash')} />
     {gap(ui)}
@@ -1569,7 +1611,8 @@ const settingsPage = ($: EngineInterface, ui: Ui, look: Look, surface: string, s
       {`These apply to ${surfaceName(surface)} only.`}
     </ui.Text>
   </ui.Box>
-)
+  )
+}
 
 // ── hooks ─────────────────────────────────────────────────────────────────
 
@@ -1931,8 +1974,9 @@ export const register: Register = on => {
     const ui: Ui = $.ui.resolve(e)
     const { Box, Text, Button } = ui
     const settings = settingsFor(await read($, settingsAtom), e.surface)
-    const look = lookFor(e.surface, iconChoice(e.surface, settings))
-    const { icons } = look
+    const look = lookFor(e.surface, iconChoice(e.surface, settings), MOCHA_PAINT)
+    const { icons, paint } = look
+    const C = look.c
     if ((await read($, paneViewAtom)) === 'settings') {
       return settingsPage($, ui, look, e.surface, settings, await read($, cacheAtom))
     }
@@ -1966,15 +2010,15 @@ export const register: Register = on => {
     const clock = Math.max(now, frame.at)
     const isWorking = work.isWorking
     const t = tweenProgress(snapshot, frame.at)
-    const breath = RED_BREATH[frame.n % RED_BREATH.length] ?? C.red
+    const breath = paint.redBreath[frame.n % paint.redBreath.length] ?? C.red
     // a figure at or past HOT_PCT pulses while Claude works, and holds still red otherwise
     const hotColor = (pct: number | undefined): string =>
-      isWorking && (pct ?? 0) >= HOT_PCT ? breath : thresholdColor(pct)
+      isWorking && (pct ?? 0) >= HOT_PCT ? breath : thresholdColor(C, pct)
 
     // header
     const startedAt = snapshot?.startedAt
     const elapsed = startedAt === undefined ? '—' : fmtElapsed(clock - startedAt)
-    const liveColor = isWorking ? (BREATH[frame.n % BREATH.length] ?? C.teal) : C.overlay0
+    const liveColor = isWorking ? (paint.breath[frame.n % paint.breath.length] ?? C.teal) : C.overlay0
     const model = modelInfo.model ?? totals.model
     const modelLine = [model === undefined ? undefined : shortModel(model), modelInfo.effort]
       .filter((x): x is string => x !== undefined && x !== '')
@@ -2054,7 +2098,7 @@ export const register: Register = on => {
           look,
           'context',
           'CONTEXT',
-          thresholdColor(pct),
+          thresholdColor(C, pct),
           <Text tabular wrap="truncate-end">
             <Text color={C.subtext}>
               {ctx === undefined
@@ -2068,13 +2112,13 @@ export const register: Register = on => {
         )}
         {drawCells(
           ui,
-          contextCells(W, pctShown, breakdown, ctx?.window ?? 0, isWorking ? frame.n : undefined, hotColor(pct)),
+          contextCells(paint, W, pctShown, breakdown, ctx?.window ?? 0, isWorking ? frame.n : undefined, hotColor(pct)),
         )}
         {legend.length > 0 && (
           <Text wrap="truncate-end" size="footnote">
             {legend.map(s => (
               <Text>
-                <Text color={sliceColor(s.label)}>{icons.legend}</Text>
+                <Text color={sliceColor(paint, s.label)}>{icons.legend}</Text>
                 <Text color={C.overlay0}>{` ${s.label} ${fmtTokens(s.tokens)}  `}</Text>
               </Text>
             ))}
@@ -2134,7 +2178,7 @@ export const register: Register = on => {
           metricRow(ui, look, 'spend', 'SPEND', C.yellow, [
             <Text color={C.yellow} weight="semibold" tabular>{`today ${fmtUsd(spent.today)}`}</Text>,
             <Text color={C.overlay0} tabular>{`  wk ${fmtUsd(spent.week)}  `}</Text>,
-            ...runs(sparkCells(spent.days, 7)).map(r => <Text color={r.color}>{r.ch}</Text>),
+            ...runs(sparkCells(paint, spent.days, 7)).map(r => <Text color={r.color}>{r.ch}</Text>),
           ])}
 
         {limits.length > 0 && gap(ui)}
@@ -2146,7 +2190,7 @@ export const register: Register = on => {
           return (
             <Box flexDirection="row" alignItems="center">
               <Text color={C.subtext} wrap="truncate-end">{shortKind(l.kind).padEnd(3)}</Text>
-              {drawCells(ui, barCells(limitBarW, l.percentUsed, color))}
+              {drawCells(ui, barCells(C, limitBarW, l.percentUsed, color))}
               <Text color={color} weight="semibold" wrap="truncate-end" tabular>{` ${pctText(l.percentUsed).padStart(4)}`}</Text>
               {resetIn !== undefined && !Number.isNaN(resetIn) && iconLabel(ui, look, 'reset', C.overlay0, fmtSpan(resetIn), 2)}
               {burn !== undefined &&
@@ -2170,9 +2214,9 @@ export const register: Register = on => {
             ? undefined
             : iconLabel(ui, look, 'speed', isWorking ? C.teal : C.overlay0, `${Math.round(shownRate)} tok/s`),
         )}
-        {stream.rates.length >= 2 && drawCells(ui, sparkCells(stream.rates, W))}
+        {stream.rates.length >= 2 && drawCells(ui, sparkCells(paint, stream.rates, W))}
         {recent.map(a => {
-          const glyph = statusGlyph(a.status, frame.n, look.pie)
+          const glyph = statusGlyph(C, a.status, frame.n, look.pie)
           const ms = a.status === 'running' ? clock - a.startedAt : (a.durationMs ?? 0)
           // a new row lights up and fades to its colours over the first second
           const age = frame.at - a.startedAt
@@ -2260,7 +2304,7 @@ export const register: Register = on => {
           <Box flexDirection="row" alignItems="center">
             {icon(ui, look, 'todo', C.lavender)}
             <Text color={C.lavender} weight="semibold" wrap="truncate-end">{' TODO '}</Text>
-            {drawCells(ui, barCells(12, (done / todos.length) * 100, C.lavender))}
+            {drawCells(ui, barCells(C, 12, (done / todos.length) * 100, C.lavender))}
             <Text color={C.text} tabular>{` ${done}/${todos.length}`}</Text>
           </Box>
         )}
@@ -2296,8 +2340,9 @@ export const register: Register = on => {
 
     const ui: Ui = $.ui.resolve(e)
     const { Box, Text } = ui
-    const look = lookFor(e.surface, iconChoice(e.surface, settings))
+    const look = lookFor(e.surface, iconChoice(e.surface, settings), MOCHA_PAINT)
     const { icons } = look
+    const C = look.c
     const [activity, frame, work, stream, agents] = await Promise.all([
       read($, activityAtom),
       read($, frameAtom),
@@ -2310,7 +2355,7 @@ export const register: Register = on => {
     const spin: PillIcon = { glyph: look.pie[frame.n % look.pie.length] ?? '•', shape: 'spin' }
     const current =
       running === undefined
-        ? phaseLook(frame.phase, icons, spin)
+        ? phaseLook(C, frame.phase, icons, spin)
         : { icon: spin, label: toolName(running.tool), color: C.peach }
     const detail = running === undefined ? '' : ` ${running.summary}`
     const toolMs = running === undefined ? undefined : frame.at - running.startedAt
